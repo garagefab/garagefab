@@ -1,0 +1,16 @@
+{
+  "name": "garagefab",
+  "version": "0.0.1",
+  "description": "Garagefab: a lightweight software factory for solo developers. You plan the work, coding agents build it.",
+  "license": "MIT",
+  "author": "Turgay Zengin",
+  "homepage": "https://garagefab.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/garagefab/garagefab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/garagefab/garagefab/issues"
+  },
+  "keywords": ["ai-agents", "ai-native", "coding-agents", "software-factory"]
+}
