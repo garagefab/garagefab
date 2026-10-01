@@ -14,6 +14,20 @@ import (
 	"time"
 )
 
+func TestMain(m *testing.M) {
+	binDir := filepath.Join("..", "..", "bin")
+	_ = os.MkdirAll(binDir, 0755)
+	binPath := filepath.Join(binDir, "garagefab")
+
+	cmd := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to build garagefab binary for tests: %v\noutput: %s\n", err, string(out))
+		os.Exit(1)
+	}
+
+	os.Exit(m.Run())
+}
+
 func TestCLI_Version_CLI5(t *testing.T) {
 	cmd := exec.Command("../../bin/garagefab", "version")
 	out, err := cmd.CombinedOutput()

@@ -26,7 +26,7 @@ build: ui
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/garagefab
 
-test:
+test: build
 	go test -v ./...
 
 vet:
@@ -35,7 +35,7 @@ vet:
 lint: ui
 	@which golangci-lint >/dev/null 2>&1 && golangci-lint run || echo "golangci-lint not installed, skipping or run via CI"
 
-ci: ui lint vet test build
+ci: build lint vet test
 
 clean:
 	rm -rf $(BIN_DIR) ui/dist

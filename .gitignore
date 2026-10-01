@@ -8,3 +8,4 @@ ui/node_modules/
 *.db-shm
 .garagefab/
 .superpowers/
+.vscode/
