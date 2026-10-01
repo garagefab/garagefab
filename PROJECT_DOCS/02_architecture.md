@@ -54,6 +54,7 @@ Derived from `intent.md`; each one has a concrete architectural consequence.
 | D17 | Worktrees are created at a job's **first agent step** from the **latest remote base** (`git fetch`, then `origin/<base>`); configurable via `base_ref`; fetch failure falls back to the local base branch with a warning event | Agents work on current code and PRs conflict less; works offline; `intent.md` updated accordingly |
 | D18 | Both **classic** and **fine-grained** PATs are supported; the GitHub Project link is optional | Classic is the easiest path for solo developers on personal accounts; fine-grained cannot reach user-owned Projects |
 | D19 | Dashboard auth: one-time token URL → `HttpOnly` `SameSite=Strict` session cookie; skill and CLI use the bearer token | No friction after first open; JS never holds the token |
+| D20 | `gopkg.in/yaml.v3` for YAML parsing | Pure Go, standard YAML parser for global and project configuration files |
 
 ## 4. System Overview
 
