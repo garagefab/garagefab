@@ -9,13 +9,13 @@ import (
 
 // Scheduler manages concurrent job execution according to global concurrency limits (SCH-1..4).
 type Scheduler struct {
-	store          Store
-	engine         *Engine
-	maxConcurrent  int
-	pollInterval   time.Duration
-	wakeCh         chan struct{}
-	activeWg       sync.WaitGroup
-	runningJobs    sync.Map // jobID -> context.CancelFunc
+	store         Store
+	engine        *Engine
+	maxConcurrent int
+	pollInterval  time.Duration
+	wakeCh        chan struct{}
+	activeWg      sync.WaitGroup
+	runningJobs   sync.Map // jobID -> context.CancelFunc
 }
 
 // NewScheduler creates a new scheduler with concurrency limits.

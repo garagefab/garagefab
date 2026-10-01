@@ -73,7 +73,7 @@ func TestSanitizeEnv_SEC6(t *testing.T) {
 	}()
 
 	custom := map[string]string{
-		"MY_CUSTOM_VAR": "value123",
+		"MY_CUSTOM_VAR":  "value123",
 		"ANOTHER_SECRET": "must-be-stripped",
 	}
 

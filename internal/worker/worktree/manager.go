@@ -21,10 +21,10 @@ var (
 
 // WorktreeInfo contains metadata about an active worktree.
 type WorktreeInfo struct {
-	Path       string `json:"path"`
-	Branch     string `json:"branch"`
-	BaseSHA    string `json:"base_sha"`
-	FetchWarn  bool   `json:"fetch_warn"`
+	Path      string `json:"path"`
+	Branch    string `json:"branch"`
+	BaseSHA   string `json:"base_sha"`
+	FetchWarn bool   `json:"fetch_warn"`
 }
 
 // Manager manages git worktrees for jobs with per-project mutex serialization (WKT-1..9).
