@@ -184,3 +184,13 @@ type JobListFilter struct {
 	Limit     int
 	Cursor    int64
 }
+
+// JobStatusItem contains summary fields for displaying active jobs (CLI-4).
+type JobStatusItem struct {
+	ID          int64  `json:"id"`
+	ProjectName string `json:"project_name"`
+	WorkType    string `json:"work_type"`
+	Stage       string `json:"stage"`
+	Status      string `json:"status"`
+	Title       string `json:"title"`
+}

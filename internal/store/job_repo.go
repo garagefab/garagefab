@@ -287,6 +287,37 @@ func (r *JobRepo) ListAttentionJobs(ctx context.Context) ([]*Job, error) {
 	return jobs, nil
 }
 
+// ListActiveStatusJobs returns active running jobs and attention-needing jobs with project names (CLI-4).
+func (r *JobRepo) ListActiveStatusJobs(ctx context.Context) ([]*JobStatusItem, error) {
+	query := `
+		SELECT j.id, COALESCE(p.name, ''), j.work_type, j.stage, j.status, j.title
+		FROM jobs j
+		LEFT JOIN projects p ON j.project_id = p.id
+		WHERE j.status IN ('running', 'needs_clarification', 'spec_review', 'awaiting_approval', 'failed', 'interrupted')
+		ORDER BY j.id ASC
+	`
+	rows, err := r.q.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("store: list active status jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*JobStatusItem
+	for rows.Next() {
+		var item JobStatusItem
+		if err := rows.Scan(&item.ID, &item.ProjectName, &item.WorkType, &item.Stage, &item.Status, &item.Title); err != nil {
+			return nil, fmt.Errorf("store: scan active status job: %w", err)
+		}
+		items = append(items, &item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list active status jobs rows: %w", err)
+	}
+
+	return items, nil
+}
+
 func scanJob(row rowScanner) (*Job, error) {
 	var (
 		j            Job
