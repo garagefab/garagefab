@@ -1,0 +1,1 @@
+  501 58719 58706   0  8:40PM ttys001    0:01.96 opencode run --auto Count from 1 to 5 slowly with 1 second delay.

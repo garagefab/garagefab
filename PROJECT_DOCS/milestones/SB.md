@@ -12,7 +12,7 @@ Verify the GitHub assumptions before building the provider (`architecture.md` §
 
 | Artifact | Location | Purpose |
 |----------|----------|---------|
-| Spike report | `docs/spikes/github.md` | Answers all 6 questions with evidence |
+| Spike report | `PROJECT_DOCS/spikes/github.md` | Answers all 6 questions with evidence |
 | Decision updates | `PROJECT_DOCS/02_architecture.md` §3 | New entries if any assumption changes |
 | Open question closures | `architecture.md` §12, `spec.md` OQ-1, OQ-14 | Mark resolved with references to findings |
 
@@ -62,7 +62,7 @@ This is a **research spike**, not a coding task. The work is:
 
 ## Output Structure
 
-The spike report (`docs/spikes/github.md`) should follow this template:
+The spike report (`PROJECT_DOCS/spikes/github.md`) should follow this template:
 
 ```markdown
 # Spike B: GitHub Research
@@ -95,7 +95,7 @@ The spike report (`docs/spikes/github.md`) should follow this template:
 
 ## Exit Criteria
 - [ ] All 6 questions answered with recorded evidence.
-- [ ] `docs/spikes/github.md` is complete.
+- [ ] `PROJECT_DOCS/spikes/github.md` is complete.
 - [ ] `architecture.md` §12 verified or updated.
 - [ ] `spec.md` OQ-1 and OQ-14 answered.
 - [ ] Any assumption changes recorded as decision log entries.

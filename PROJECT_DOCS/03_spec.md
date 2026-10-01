@@ -608,7 +608,7 @@ All items below were reviewed with the developer. IDs are kept stable because re
 | OQ-4 | Test result detail in the evidence | **Pass/fail only.** Per-test counts (test report parsing, e.g., JUnit) are Phase 2. | Confirmed (changed from draft) |
 | OQ-5 | Review reference when there is no job spec (`refactor`, `docs`) | The intent text. | Confirmed |
 | OQ-6 | "Background service" in `intent.md` | Phase 1 runs in the **foreground**. The README explains how to keep it running with tmux, launchd, and systemd, with example files. Built-in background mode and `install-service` are Phase 2. | Confirmed (option A) |
-| OQ-7 | Where each agent keeps global skills; skill format | Determined together with the adapters (`architecture.md` O2). | Confirmed; details open |
+| OQ-7 | Where each agent keeps global skills; skill format | Resolved by Spike A (`PROJECT_DOCS/spikes/agent-clis.md`). `agy`: `~/.gemini/antigravity/` / `plugins/`, `SKILL.md` format. `opencode`: plugins and MCP. | Confirmed |
 | OQ-8 | CLI `run` command from `techstack.md` | Dropped. Commands: `start`, `status`, `open`, `install-skills`, `token rotate`, `version`. | Confirmed |
 | OQ-9 | Risk score scale | Integers 1–5 per dimension. | Confirmed |
 | OQ-10 | Required job spec headings | The v0 set in §6.1, refined after the first real runs (`architecture.md` O5). | Confirmed; refine later |
@@ -619,4 +619,4 @@ All items below were reviewed with the developer. IDs are kept stable because re
 | OQ-15 | Approve/Reject only from the dashboard session | Yes; bearer tokens (skill, CLI) are refused. | Confirmed |
 | OQ-16 | One job per intent file or issue | Yes; re-triggering needs a new file or issue. | Confirmed |
 
-**Remaining open items** (not blockers for the Spec): agent headless invocation and skill locations (OQ-7), and refinement of the job spec headings after real runs (OQ-10).
+**Remaining open items** (not blockers for the Spec): refinement of the job spec headings after real runs (OQ-10).

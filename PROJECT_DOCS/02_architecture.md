@@ -55,6 +55,7 @@ Derived from `intent.md`; each one has a concrete architectural consequence.
 | D18 | Both **classic** and **fine-grained** PATs are supported; the GitHub Project link is optional | Classic is the easiest path for solo developers on personal accounts; fine-grained cannot reach user-owned Projects |
 | D19 | Dashboard auth: one-time token URL → `HttpOnly` `SameSite=Strict` session cookie; skill and CLI use the bearer token | No friction after first open; JS never holds the token |
 | D20 | `gopkg.in/yaml.v3` for YAML parsing | Pure Go, standard YAML parser for global and project configuration files |
+| D21 | Agent CLI invocations: headless flags (`agy --print <prompt> --dangerously-skip-permissions --output-format json`, `opencode run --auto --format json <prompt>`), fresh session default, prompt via CLI args. Exit code 0 does not imply task success; adapters must inspect JSON status and verify artifacts/diff | Spike A findings (`PROJECT_DOCS/spikes/agent-clis.md`); agent CLIs exit 0 even on task-level failure |
 
 ## 4. System Overview
 
@@ -480,12 +481,15 @@ An **orphan agent** is a child process still running after Garagefab died. On ev
 | Per-test result counts | Test report parsers in `worker/command`, shown in the evidence |
 | Background mode / service installation | New `cmd` subcommands (`install-service` for launchd/systemd) |
 | Security sandboxes | Alternate process launcher behind the worker interfaces |
+| Per-stage reasoning effort | Profile configuration and `worker/agent` adapter flags (`--effort`, `--variant`) |
+| ReAct loop context injection | Prompt builder in `factory` injecting target files and error diffs |
+| Live agent tool streaming | NDJSON event parser in `worker/agent` forwarded to `server` SSE hub |
+| Token accounting & smart abort | `step_runs` table schema extension and scheduler anomaly timeout |
 
 ## 23. Open Questions
 
 | # | Question | Needed by |
 |---|----------|-----------|
-| O2 | Exact headless invocation for `agy` and `opencode` (non-interactive flags, prompt delivery by argument/stdin/file, forcing a fresh session). To be determined while developing the adapters. | Adapter implementation |
 | O5 | Exact schemas for `review.json` and the required `spec.md` headings. To be researched and decided when the spec stage is detailed. | `spec.md` |
 
-Resolved: O1 (worktree at first agent step; `intent.md` updated), O3 (D17), O4 (D18), O6 (D19).
+Resolved: O1 (worktree at first agent step; `intent.md` updated), O2 (D21; headless flags, prompt args, fresh session in `PROJECT_DOCS/spikes/agent-clis.md`), O3 (D17), O4 (D18), O6 (D19).

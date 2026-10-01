@@ -311,12 +311,16 @@ The following features are explicitly deferred to Phase 2 to keep the MVP focuse
 ### Pipeline Customization
 - **Custom Work Types** — Users define their own work types with custom pipeline step configurations.
 - **Custom Step Configuration** — Users modify which steps are active for each work type.
+- **Per-Stage Reasoning Effort Tuning** — Configurable agent reasoning effort per pipeline stage (e.g. `--effort high` / `--variant max` for spec and review; `--effort low|medium` / `--variant minimal` for fast coding and repair cycles).
+- **ReAct Loop Optimization & Context Injection** — Automatic pre-injection of relevant source files and error diffs into agent prompts to bypass unnecessary file-read tool turns and accelerate turn completion.
 - **Triage Agent** — Automatic classification of incoming jobs into work types by a lightweight AI agent at pipeline entry.
 - **Configurable Merge Behavior** — Per-work-type configuration of auto-merge vs. PR-only vs. manual merge.
 - **Per-Step Approval Gate Configuration** — Fine-grained control over which steps require human approval.
 
 ### Operational
 - **Token Budget and Cost Control** — Per-job and per-step token budgets with automatic halt on budget exceeded. Important due to non-linear cost compounding in retry loops: token usage grows super-linearly (not just 3x for 3 retries, but potentially 5-7x due to context accumulation).
+- **Token Accounting & Smart Abort** — Recording per-step token breakdown (input, output, reasoning/thinking, cache) in the database with cost estimation, paired with anomaly-detection timeouts that abort looping or stalled agent turns.
+- **Live Tool-Execution Streaming** — Forwarding agent NDJSON event streams (`opencode --format json`, `agy --output-format stream-json`) via SSE to the dashboard for real-time visibility into agent thinking, file reads, edits, and command runs.
 - **OS Notifications** — macOS/Linux system notifications for approval gates and job completions.
 - **Background Mode and Service Installation** — `install-service` for launchd/systemd and a built-in background mode.
 - **Test Report Parsing** — Per-test result counts (e.g., JUnit XML) in the chain of evidence.

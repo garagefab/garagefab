@@ -1,6 +1,6 @@
 # SA — Spike A: Agent CLIs
 
-> Status: **Not started**
+> Status: **Completed**
 > Size: S · Depends on: —
 > Unblocks: M5 (adapters, prompts, skill), `architecture.md` O2, `spec.md` OQ-7
 
@@ -12,8 +12,8 @@ Replace assumptions about `agy` (Antigravity CLI) and `opencode` with verified f
 
 | Artifact | Location | Purpose |
 |----------|----------|---------|
-| Spike report | `docs/spikes/agent-clis.md` | Answers all 13 questions with evidence |
-| Test fixtures | `docs/spikes/fixtures/agy/` and `docs/spikes/fixtures/opencode/` | Recorded real outputs for adapter contract tests |
+| Spike report | `PROJECT_DOCS/spikes/agent-clis.md` | Answers all 13 questions with evidence |
+| Test fixtures | `PROJECT_DOCS/spikes/fixtures/agy/` and `PROJECT_DOCS/spikes/fixtures/opencode/` | Recorded real outputs for adapter contract tests |
 | Decision updates | `PROJECT_DOCS/02_architecture.md` §3 | New entries if any assumption changes |
 | Open question closures | `architecture.md` O2, `spec.md` OQ-7 | Mark resolved with references to findings |
 
@@ -215,7 +215,7 @@ Each experiment runs in a clean state (reset the repo between runs).
 
 ## Output Structure
 
-The spike report (`docs/spikes/agent-clis.md`) should follow this template:
+The spike report (`PROJECT_DOCS/spikes/agent-clis.md`) should follow this template:
 
 ```markdown
 # Spike A: Agent CLI Research
@@ -254,7 +254,7 @@ The spike report (`docs/spikes/agent-clis.md`) should follow this template:
 
 ## Test Fixtures
 
-For each agent, capture and commit these files under `docs/spikes/fixtures/<agent>/`:
+For each agent, capture and commit these files under `PROJECT_DOCS/spikes/fixtures/<agent>/`:
 
 | Fixture | Description |
 |---------|-------------|
@@ -270,14 +270,14 @@ These fixtures become the basis for adapter unit tests in M5.
 
 ## Exit Criteria
 
-- [ ] All 13 questions answered for both `agy` and `opencode` with recorded evidence.
-- [ ] `docs/spikes/agent-clis.md` is complete and follows the template above.
-- [ ] Test fixtures committed under `docs/spikes/fixtures/`.
-- [ ] `architecture.md` O2 marked resolved with a reference to findings.
-- [ ] `spec.md` OQ-7 answered (skill locations and format).
-- [ ] Plan open items P-2 (instructions file) and P-8 (skill format) answered.
-- [ ] Any assumption changes recorded as decision log entries in `architecture.md` §3.
-- [ ] If Risk R1 materializes (no reliable headless mode), a mitigation plan is documented.
+- [x] All 13 questions answered for both `agy` and `opencode` with recorded evidence.
+- [x] `PROJECT_DOCS/spikes/agent-clis.md` is complete and follows the template above.
+- [x] Test fixtures committed under `PROJECT_DOCS/spikes/fixtures/`.
+- [x] `architecture.md` O2 marked resolved with a reference to findings.
+- [x] `spec.md` OQ-7 answered (skill locations and format).
+- [x] Plan open items P-2 (instructions file) and P-8 (skill format) answered.
+- [x] Any assumption changes recorded as decision log entries in `architecture.md` §3 (D21).
+- [x] If Risk R1 materializes (no reliable headless mode), a mitigation plan is documented (R1 closed: both agents have reliable headless auto-approval flags).
 
 ## Risks
 

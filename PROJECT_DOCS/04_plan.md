@@ -28,12 +28,12 @@
 | # | Milestone | Size | Depends on | Exit criterion (short) |
 |---|-----------|------|------------|------------------------|
 | M0 | Foundation | S | — | `make ci` green on macOS and Linux; `garagefab start` serves a placeholder UI and `/api/health` |
-| SA | Spike A: agent CLIs | S | — | `docs/spikes/agent-clis.md` answers every question in §5 for `agy` and `opencode`; start alongside M0–M1 so adapters are ready for M5 |
+| SA | Spike A: agent CLIs | S | — | `PROJECT_DOCS/spikes/agent-clis.md` answers every question in §5 for `agy` and `opencode`; start alongside M0–M1 so adapters are ready for M5 |
 | M1 | Walking skeleton | L | M0 | A `refactor` job runs end to end with the fake agent through the API (spec Scenario 1 shape, without spec or GitHub) |
 | M2 | Safety and repair | M | M1 | Scenarios 3 (repair, guardrail) and 5 (crash recovery) pass in CI |
 | M3 | Spec flow and evidence | L | M2 | A `feature` job passes clarification, spec review, review report, and approval gate via the API; Scenarios 2 (without GitHub) and 4 pass |
 | M4 | Dashboard and security | L | M3 | The `feature` flow and clarification flow are drivable from the UI with the fake agent |
-| SB | Spike B: GitHub | S | — | `docs/spikes/github.md` answers every question in §5; start alongside M3–M4 so the provider is ready for M6 |
+| SB | Spike B: GitHub | S | — | `PROJECT_DOCS/spikes/github.md` answers every question in §5; start alongside M3–M4 so the provider is ready for M6 |
 | M5 | Real agents and skill | M | M3, SA | A real `refactor` job completes locally with each of `agy` and `opencode`; the skill reads a job |
 | M6 | GitHub and delivery | L | M4, SB | Scenario 1 passes against a real test repository |
 | M7 | Remaining profiles and hardening | M | M5, M6 | Scenario 6 passes; edge-case table and NFR checks pass |
@@ -74,7 +74,7 @@ Tasks (candidate issues):
 ### SA — Spike A: agent CLIs (S)
 
 **Goal:** Replace assumptions about `agy` and `opencode` with facts, so adapters, prompts, and the skill can be designed (closes `architecture.md` O2 and `spec.md` OQ-7).
-**Output:** `docs/spikes/agent-clis.md` plus recorded real outputs as test fixtures.
+**Output:** `PROJECT_DOCS/spikes/agent-clis.md` plus recorded real outputs as test fixtures.
 Questions are listed in §5.
 
 ### M1 — Walking skeleton (L)
@@ -118,7 +118,7 @@ Deliverables:
 ### SB — Spike B: GitHub (S)
 
 **Goal:** Verify the GitHub assumptions before building the provider (`architecture.md` §12, `spec.md` OQ-1).
-**Output:** `docs/spikes/github.md`. Questions are listed in §5.
+**Output:** `PROJECT_DOCS/spikes/github.md`. Questions are listed in §5.
 
 ### M5 — Real agents and skill (M)
 
