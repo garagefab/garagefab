@@ -1,25 +1,34 @@
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    govet:
+      enable-all: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - ui
+      - bin
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
   enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
     - goimports
-
-linters-settings:
-  govet:
-    enable-all: false
-  errcheck:
-    check-type-assertions: false
-    check-blank: false
-
-issues:
-  exclude-dirs:
-    - ui
-    - bin
+  exclusions:
+    generated: lax
+    paths:
+      - ui
+      - bin
+      - third_party$
+      - builtin$
+      - examples$
