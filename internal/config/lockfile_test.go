@@ -41,5 +41,9 @@ func TestLockFile_SecondInstance_RCV5(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireLock after release failed: %v", err)
 	}
-	defer lock3.Release()
+	defer func() {
+		if err := lock3.Release(); err != nil {
+			t.Errorf("lock3.Release failed: %v", err)
+		}
+	}()
 }

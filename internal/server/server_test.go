@@ -79,7 +79,7 @@ func TestSPAFallback(t *testing.T) {
 	cfg.Server.Listen = "127.0.0.1:7878"
 
 	mockFS := fstest.MapFS{
-		"index.html": {Data: []byte("<html><body>Dashboard</body></html>")},
+		"index.html":    {Data: []byte("<html><body>Dashboard</body></html>")},
 		"assets/app.js": {Data: []byte("console.log('app')")},
 	}
 

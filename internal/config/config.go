@@ -21,11 +21,11 @@ type StepTimeouts struct {
 
 // EngineConfig holds factory and runner configuration defaults.
 type EngineConfig struct {
-	MaxConcurrentJobs int          `yaml:"max_concurrent_jobs"`
-	MaxRepairAttempts int          `yaml:"max_repair_attempts"`
+	MaxConcurrentJobs int           `yaml:"max_concurrent_jobs"`
+	MaxRepairAttempts int           `yaml:"max_repair_attempts"`
 	PollInterval      time.Duration `yaml:"poll_interval"`
-	StepTimeouts      StepTimeouts `yaml:"step_timeouts"`
-	EnvPassthrough    []string     `yaml:"env_passthrough"`
+	StepTimeouts      StepTimeouts  `yaml:"step_timeouts"`
+	EnvPassthrough    []string      `yaml:"env_passthrough"`
 }
 
 // GitHubConfig holds configuration for GitHub integration.

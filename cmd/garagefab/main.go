@@ -79,7 +79,11 @@ var startCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
-		defer lock.Release()
+		defer func() {
+			if err := lock.Release(); err != nil {
+				slog.Error("failed to release lock", "error", err)
+			}
+		}()
 
 		// Store & migrations (T4)
 		dbPath := filepath.Join(cfg.DataDir, "garagefab.db")

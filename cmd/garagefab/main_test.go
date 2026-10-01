@@ -47,10 +47,15 @@ func TestCLI_Start_And_SecondInstance_RCV5_CLI1(t *testing.T) {
 	// Wait up to 5 seconds for health endpoint
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/api/health", port)
 	var healthOk bool
+	var lastErr error
 	for i := 0; i < 50; i++ {
 		time.Sleep(100 * time.Millisecond)
 		resp, err := http.Get(healthURL)
-		if err == nil && resp.StatusCode == http.StatusOK {
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			var data map[string]string
@@ -58,11 +63,14 @@ func TestCLI_Start_And_SecondInstance_RCV5_CLI1(t *testing.T) {
 				healthOk = true
 				break
 			}
+		} else {
+			lastErr = fmt.Errorf("status code: %d", resp.StatusCode)
+			resp.Body.Close()
 		}
 	}
 
 	if !healthOk {
-		t.Fatal("health endpoint did not become ready in time")
+		t.Fatalf("health endpoint did not become ready in time: last error: %v", lastErr)
 	}
 
 	// Verify that placeholder UI is served at root
