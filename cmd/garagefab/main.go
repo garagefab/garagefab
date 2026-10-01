@@ -18,9 +18,13 @@ import (
 
 	"github.com/garagefab/garagefab"
 	"github.com/garagefab/garagefab/internal/config"
+	"github.com/garagefab/garagefab/internal/factory"
 	"github.com/garagefab/garagefab/internal/server"
 	"github.com/garagefab/garagefab/internal/store"
 	"github.com/garagefab/garagefab/internal/version"
+	"github.com/garagefab/garagefab/internal/worker/agent"
+	"github.com/garagefab/garagefab/internal/worker/command"
+	"github.com/garagefab/garagefab/internal/worker/worktree"
 )
 
 var (
@@ -94,8 +98,20 @@ var startCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		// Server (T6, T7)
-		srv := server.NewServer(cfg, db, garagefab.Dist())
+		// Worker, Factory, and Scheduler (M1)
+		storeAdapter := newFactoryStoreAdapter(db)
+		wtMgr := newFactoryWorktreeAdapter(worktree.NewManager(filepath.Join(cfg.DataDir, "worktrees")))
+		fakeAgent := newFactoryAgentAdapter(agent.NewFakeRunner())
+		cmdRunner := newFactoryCommandAdapter(command.NewRunner())
+		engine := factory.NewEngine(storeAdapter, wtMgr, fakeAgent, cmdRunner, filepath.Join(cfg.DataDir, "logs"))
+		scheduler := factory.NewScheduler(storeAdapter, engine, cfg.Engine.MaxConcurrentJobs)
+
+		schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
+		defer cancelScheduler()
+		go scheduler.Start(schedulerCtx)
+
+		// Server (T4)
+		srv := server.NewServer(cfg, db, engine, scheduler, garagefab.Dist())
 		go func() {
 			if err := srv.Start(cfg.Server.Listen); err != nil && err != http.ErrServerClosed {
 				slog.Error("server stopped with error", "error", err)

@@ -15,21 +15,38 @@ import (
 	"github.com/garagefab/garagefab/internal/store"
 )
 
+// JobEngine defines pipeline actions required by the HTTP server.
+type JobEngine interface {
+	Approve(ctx context.Context, jobID int64, headSHA string) error
+	Reject(ctx context.Context, jobID int64, note string) error
+	Cancel(ctx context.Context, jobID int64) error
+	Retry(ctx context.Context, jobID int64) error
+}
+
+// JobScheduler defines scheduling actions required by the HTTP server.
+type JobScheduler interface {
+	Wake()
+}
+
 // Server coordinates the HTTP router, middleware, APIs, and static UI file serving.
 type Server struct {
 	Router     *chi.Mux
 	Config     *config.Config
 	DB         *store.DB
+	Engine     JobEngine
+	Scheduler  JobScheduler
 	UIFS       fs.FS
 	httpServer *http.Server
 }
 
 // NewServer initializes a new Server instance with Chi router and registered routes.
-func NewServer(cfg *config.Config, db *store.DB, uiFS fs.FS) *Server {
+func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler JobScheduler, uiFS fs.FS) *Server {
 	s := &Server{
-		Config: cfg,
-		DB:     db,
-		UIFS:   uiFS,
+		Config:    cfg,
+		DB:        db,
+		Engine:    engine,
+		Scheduler: scheduler,
+		UIFS:      uiFS,
 	}
 
 	r := chi.NewRouter()
@@ -42,6 +59,34 @@ func NewServer(cfg *config.Config, db *store.DB, uiFS fs.FS) *Server {
 	// API routes
 	r.Route("/api", func(api chi.Router) {
 		api.Get("/health", s.handleHealth)
+		api.Post("/session", s.handleCreateSession)
+
+		// Authenticated routes (SEC-1, SEC-3)
+		api.Group(func(protected chi.Router) {
+			protected.Use(s.authMiddleware)
+
+			// Projects (PRJ-1..5)
+			protected.Get("/projects", s.handleListProjects)
+			protected.Post("/projects", s.handleCreateProject)
+			protected.Get("/projects/{id}", s.handleGetProject)
+
+			// Jobs (INT-1, PIP-6, PIP-7)
+			protected.Get("/jobs", s.handleListJobs)
+			protected.Post("/jobs", s.handleCreateJob)
+			protected.Get("/jobs/{id}", s.handleGetJob)
+			protected.Post("/jobs/{id}/cancel", s.handleCancelJob)
+			protected.Post("/jobs/{id}/retry", s.handleRetryJob)
+
+			// SSE Events Stream (LOG-4)
+			protected.Get("/events", s.handleEventsSSE)
+
+			// Interactive session-only endpoints (SEC-4, APR-7)
+			protected.Group(func(sessionOnly chi.Router) {
+				sessionOnly.Use(s.requireSessionOnlyMiddleware)
+				sessionOnly.Post("/jobs/{id}/approve", s.handleApproveJob)
+				sessionOnly.Post("/jobs/{id}/reject", s.handleRejectJob)
+			})
+		})
 	})
 
 	// Static UI / SPA fallback
