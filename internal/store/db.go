@@ -17,7 +17,7 @@ import (
 var embedMigrations embed.FS
 
 // ExpectedSchemaVersion is the maximum schema version this binary knows how to handle.
-const ExpectedSchemaVersion = 1
+const ExpectedSchemaVersion = 2
 
 // DB wraps separate write and read connection pools for SQLite.
 type DB struct {

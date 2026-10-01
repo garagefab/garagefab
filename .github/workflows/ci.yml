@@ -33,9 +33,9 @@ jobs:
         run: make ui
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          version: v2.14.0
           args: --timeout=5m
 
       - name: Run CI (vet, test, ui, build)
