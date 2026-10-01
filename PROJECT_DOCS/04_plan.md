@@ -45,7 +45,7 @@
 
 | Milestone | Status |
 |-----------|--------|
-| M0 | Not started |
+| M0 | Completed |
 | SA | Not started |
 | M1–M8, SB | Not started |
 
