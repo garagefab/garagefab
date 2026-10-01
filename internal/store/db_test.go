@@ -24,8 +24,8 @@ func TestOpen_FreshDatabase_AppliesMigrations(t *testing.T) {
 		t.Fatalf("failed to query _meta: %v", err)
 	}
 
-	if version != "1" {
-		t.Errorf("expected schema_version '1', got %q", version)
+	if version != "2" {
+		t.Errorf("expected schema_version '2', got %q", version)
 	}
 }
 
