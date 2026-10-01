@@ -155,7 +155,7 @@ func openBrowser(url string) {
 }
 
 func init() {
-	startCmd.Flags().StringVar(&dataDirFlag, "data-dir", "", "path to data directory (defaults to ~/.garagefab)")
+	rootCmd.PersistentFlags().StringVar(&dataDirFlag, "data-dir", "", "path to data directory (defaults to ~/.garagefab)")
 	startCmd.Flags().IntVar(&portFlag, "port", 0, "port to listen on (defaults to 7878 or value in config.yaml)")
 	startCmd.Flags().BoolVar(&noOpenFlag, "no-open", false, "do not open the browser on start")
 
