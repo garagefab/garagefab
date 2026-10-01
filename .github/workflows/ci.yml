@@ -29,6 +29,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Build UI
+        run: make ui
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:

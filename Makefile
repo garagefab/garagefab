@@ -32,10 +32,10 @@ test:
 vet:
 	go vet ./...
 
-lint:
+lint: ui
 	@which golangci-lint >/dev/null 2>&1 && golangci-lint run || echo "golangci-lint not installed, skipping or run via CI"
 
-ci: lint vet test build
+ci: ui lint vet test build
 
 clean:
 	rm -rf $(BIN_DIR) ui/dist
