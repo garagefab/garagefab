@@ -300,6 +300,16 @@ func TestAuth_Bearer_And_Session_SEC3(t *testing.T) {
 	if wCookie.Code != http.StatusOK {
 		t.Errorf("expected 200 for session cookie auth, got %d", wCookie.Code)
 	}
+
+	// 5. Create session via JSON payload POST /api/session (SEC-3)
+	reqJSON := httptest.NewRequest(http.MethodPost, "/api/session", strings.NewReader(`{"token":"test-secret-token"}`))
+	reqJSON.Host = "127.0.0.1:7878"
+	reqJSON.Header.Set("Content-Type", "application/json")
+	wJSON := httptest.NewRecorder()
+	srv.Router.ServeHTTP(wJSON, reqJSON)
+	if wJSON.Code != http.StatusOK {
+		t.Fatalf("expected 200 for JSON create session, got %d", wJSON.Code)
+	}
 }
 
 // TestApproveReject_SessionOnly_SEC4_APR7 verifies requirements SEC-4 and APR-7:

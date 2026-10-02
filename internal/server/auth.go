@@ -39,6 +39,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -179,9 +180,26 @@ func isValidOrigin(r *http.Request) bool {
 
 // handleCreateSession handles POST /api/session (SEC-3).
 // Exchanges the API token for an HttpOnly session cookie.
+// Accepts the API token via JSON body ({"token": "..."}), form body ("token=..."),
+// or HTTP Authorization header ("Bearer <token>").
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	// Extract token from form body or authorization header
-	token := r.FormValue("token")
+	var token string
+
+	// 1. Try decoding JSON payload if Content-Type is application/json
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		var req struct {
+			Token string `json:"token"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		token = req.Token
+	}
+
+	// 2. Fall back to form-encoded body or query parameter
+	if token == "" {
+		token = r.FormValue("token")
+	}
+
+	// 3. Fall back to Authorization Bearer header
 	if token == "" {
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
