@@ -94,6 +94,10 @@ func (f *fakeStoreForScheduler) UpdateStepRun(ctx context.Context, step *StepRun
 	return nil
 }
 
+func (f *fakeStoreForScheduler) ListStepRunsByJob(ctx context.Context, jobID int64) ([]*StepRun, error) {
+	return nil, nil
+}
+
 func (f *fakeStoreForScheduler) CreateProcessRecord(ctx context.Context, stepRunID int64, pid, pgid int, startTime int64) error {
 	return nil
 }
@@ -143,6 +147,18 @@ func (f *fakeWorktreeManager) Diff(ctx context.Context, worktreePath, baseSHA st
 }
 func (f *fakeWorktreeManager) HeadSHA(ctx context.Context, worktreePath string) (string, error) {
 	return "sha", nil
+}
+func (f *fakeWorktreeManager) WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error {
+	return nil
+}
+func (f *fakeWorktreeManager) ReadArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) ([]byte, error) {
+	return nil, nil
+}
+func (f *fakeWorktreeManager) RemoveArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) error {
+	return nil
+}
+func (f *fakeWorktreeManager) ListArtifacts(ctx context.Context, worktreePath string, jobID int64) ([]string, error) {
+	return nil, nil
 }
 
 type fakeAgentRunner struct{}

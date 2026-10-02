@@ -181,6 +181,10 @@ type WorktreeManager interface {
 	Remove(ctx context.Context, repoPath, worktreePath, branchName string, deleteBranch bool) error
 	Diff(ctx context.Context, worktreePath, baseSHA string) (string, error)
 	HeadSHA(ctx context.Context, worktreePath string) (string, error)
+	WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error
+	ReadArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) ([]byte, error)
+	RemoveArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) error
+	ListArtifacts(ctx context.Context, worktreePath string, jobID int64) ([]string, error)
 }
 
 // AgentRequest specifies parameters for invoking an AI coding agent.
@@ -237,6 +241,7 @@ type Store interface {
 	CountRunningJobsByProject(ctx context.Context, projectID int64) (int, error)
 	CreateStepRun(ctx context.Context, step *StepRun) error
 	UpdateStepRun(ctx context.Context, step *StepRun) error
+	ListStepRunsByJob(ctx context.Context, jobID int64) ([]*StepRun, error)
 	CreateProcessRecord(ctx context.Context, stepRunID int64, pid, pgid int, startTime int64) error
 	MarkProcessInactive(ctx context.Context, processRecordID int64) error
 

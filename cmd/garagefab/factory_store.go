@@ -122,6 +122,19 @@ func (a *factoryStoreAdapter) UpdateStepRun(ctx context.Context, step *factory.S
 	return a.db.StepRuns().UpdateStepRun(ctx, storeStep)
 }
 
+// ListStepRunsByJob retrieves all step runs for a job, ordered chronologically.
+func (a *factoryStoreAdapter) ListStepRunsByJob(ctx context.Context, jobID int64) ([]*factory.StepRun, error) {
+	steps, err := a.db.StepRuns().ListStepRunsByJob(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	var res []*factory.StepRun
+	for _, s := range steps {
+		res = append(res, toFactoryStepRun(s))
+	}
+	return res, nil
+}
+
 // CreateProcessRecord tracks an active OS process (PID/PGID) for crash recovery (spec RCV-1).
 func (a *factoryStoreAdapter) CreateProcessRecord(ctx context.Context, stepRunID int64, pid, pgid int, startTime int64) error {
 	rec := &store.ProcessRecord{
@@ -230,5 +243,23 @@ func toFactoryProject(p *store.Project) *factory.Project {
 		RepoPath:         p.RepoPath,
 		BaseRef:          p.BaseRef,
 		EnabledWorkTypes: p.EnabledWorkTypes,
+	}
+}
+
+// toFactoryStepRun maps a persistence model (store.StepRun) to the domain model (factory.StepRun).
+func toFactoryStepRun(s *store.StepRun) *factory.StepRun {
+	return &factory.StepRun{
+		ID:              s.ID,
+		JobID:           s.JobID,
+		Stage:           s.Stage,
+		Kind:            s.Kind,
+		Attempt:         s.Attempt,
+		Executor:        s.Executor,
+		Status:          s.Status,
+		FailureCategory: s.FailureCategory,
+		ExitCode:        s.ExitCode,
+		LogPath:         s.LogPath,
+		StartedAt:       s.StartedAt,
+		EndedAt:         s.EndedAt,
 	}
 }

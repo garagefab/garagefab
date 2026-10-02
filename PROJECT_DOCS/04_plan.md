@@ -49,7 +49,8 @@
 | SA | Completed |
 | M1 | Completed |
 | M2 | Completed |
-| M3–M8, SB | Not started |
+| M3 | Completed |
+| M4–M8, SB | Not started |
 
 ## 4. Milestones
 

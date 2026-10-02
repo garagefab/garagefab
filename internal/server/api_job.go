@@ -20,6 +20,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -105,6 +106,21 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify work type is enabled for this project (PRJ-4)
+	if len(project.EnabledWorkTypes) > 0 {
+		enabled := false
+		for _, wt := range project.EnabledWorkTypes {
+			if wt == req.WorkType {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
+			http.Error(w, "Work type not enabled for project", http.StatusBadRequest)
+			return
+		}
+	}
+
 	job := &store.Job{
 		ProjectID: req.ProjectID,
 		WorkType:  req.WorkType,
@@ -173,6 +189,10 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 
 	// Execute engine approval with stale evidence verification
 	if err := s.Engine.Approve(r.Context(), id, req.HeadSHA); err != nil {
+		if errors.Is(err, factory.ErrSpecInvalid) {
+			http.Error(w, "422 validation_failed", http.StatusUnprocessableEntity) // 422 Unprocessable Entity (SPC-6)
+			return
+		}
 		if errors.Is(err, factory.ErrStaleEvidence) {
 			http.Error(w, "409 stale_evidence", http.StatusConflict) // 409 Conflict (APR-5)
 			return
@@ -207,7 +227,7 @@ func (s *Server) handleRejectJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate rejection note presence (APR-6)
-	if req.Note == "" {
+	if strings.TrimSpace(req.Note) == "" {
 		http.Error(w, "Rejection note cannot be empty", http.StatusUnprocessableEntity) // 422 Unprocessable Entity
 		return
 	}
@@ -218,6 +238,10 @@ func (s *Server) handleRejectJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Engine.Reject(r.Context(), id, req.Note); err != nil {
+		if errors.Is(err, factory.ErrEmptyRejectionNote) {
+			http.Error(w, "422 validation_failed", http.StatusUnprocessableEntity)
+			return
+		}
 		if errors.Is(err, factory.ErrInvalidState) {
 			http.Error(w, "409 invalid_state", http.StatusConflict)
 			return

@@ -44,6 +44,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/garagefab/garagefab/internal/config"
+	"github.com/garagefab/garagefab/internal/factory"
 	"github.com/garagefab/garagefab/internal/store"
 )
 
@@ -56,6 +57,10 @@ type JobEngine interface {
 	Reject(ctx context.Context, jobID int64, note string) error
 	Cancel(ctx context.Context, jobID int64) error
 	Retry(ctx context.Context, jobID int64) error
+	SubmitClarification(ctx context.Context, jobID int64, answers []factory.ClarificationAnswer) error
+	GetEvidence(ctx context.Context, jobID int64) (*factory.EvidenceSummary, error)
+	GetArtifact(ctx context.Context, jobID int64, name string) ([]byte, error)
+	GetDiff(ctx context.Context, jobID int64) (string, error)
 }
 
 // JobScheduler defines scheduling actions required by the HTTP server.
@@ -114,6 +119,10 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 			protected.Get("/jobs/{id}", s.handleGetJob)
 			protected.Post("/jobs/{id}/cancel", s.handleCancelJob)
 			protected.Post("/jobs/{id}/retry", s.handleRetryJob)
+			protected.Post("/jobs/{id}/clarification", s.handleClarification)
+			protected.Get("/jobs/{id}/evidence", s.handleGetEvidence)
+			protected.Get("/jobs/{id}/diff", s.handleGetDiff)
+			protected.Get("/jobs/{id}/artifacts/{name}", s.handleGetArtifact)
 
 			// SSE Live Events Stream (LOG-4)
 			protected.Get("/events", s.handleEventsSSE)
