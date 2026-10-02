@@ -400,6 +400,8 @@ func TestProjectAndJobAPIs_PRJ1_INT1(t *testing.T) {
 		_ = cmd.Run()
 	}
 	runGit("init")
+	_ = os.MkdirAll(filepath.Join(repoDir, ".garagefab"), 0755)
+	_ = os.WriteFile(filepath.Join(repoDir, ".garagefab", "project.yaml"), []byte("base_ref: origin/main\nwork_types:\n  - refactor\n"), 0644)
 
 	// 1. Create project (PRJ-1..5)
 	projBody := fmt.Sprintf(`{"name":"test-api-proj","repo_path":%q,"base_ref":"origin/main"}`, repoDir)

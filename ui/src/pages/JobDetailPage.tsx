@@ -20,6 +20,7 @@ import { ClarificationForm } from '../components/ClarificationForm';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { EvidenceSection } from '../components/EvidenceSection';
 import { DiffViewer } from '../components/DiffViewer';
+import { useSSE } from '../hooks/useSSE';
 
 interface JobDetailPageProps {
   jobId: number;
@@ -86,6 +87,9 @@ export function JobDetailPage({ jobId, onOpenLogs }: JobDetailPageProps) {
   useEffect(() => {
     loadJobData();
   }, [loadJobData]);
+
+  // Live SSE listener: auto-update job details on pipeline events (UI-5)
+  useSSE(loadJobData);
 
   // Action handlers calling backend REST endpoints (UI-4)
   const handleApprove = async () => {

@@ -77,7 +77,14 @@ func createTestRepo(t *testing.T) string {
 	if err := os.WriteFile(readme, []byte("# E2E Repo\n"), 0600); err != nil {
 		t.Fatalf("write readme: %v", err)
 	}
-	runGit("add", "README.md")
+
+	_ = os.MkdirAll(filepath.Join(repoDir, ".garagefab"), 0700)
+	projCfg := "base_ref: main\nwork_types:\n  - refactor\n  - feature\n  - bug_fix\n  - docs\n"
+	if err := os.WriteFile(filepath.Join(repoDir, ".garagefab", "project.yaml"), []byte(projCfg), 0600); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	runGit("add", ".")
 	runGit("commit", "-m", "initial commit")
 
 	return repoDir

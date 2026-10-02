@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   Layers,
   PlayCircle,
@@ -15,6 +15,7 @@ import { apiFetch } from '../lib/api';
 import { AttentionList } from '../components/AttentionList';
 import { ActivityFeed } from '../components/ActivityFeed';
 import { Link } from '../lib/router';
+import { useSSE } from '../hooks/useSSE';
 
 interface OverviewPageProps {
   onOpenNewJob: () => void;
@@ -26,7 +27,7 @@ export function OverviewPage({ onOpenNewJob, onOpenAddProject }: OverviewPagePro
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadOverview = async () => {
+  const loadOverview = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -37,11 +38,14 @@ export function OverviewPage({ onOpenNewJob, onOpenAddProject }: OverviewPagePro
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadOverview();
-  }, []);
+  }, [loadOverview]);
+
+  // Live SSE listener: auto-update overview metrics on pipeline events (UI-5)
+  useSSE(loadOverview);
 
   if (loading && !data) {
     return (

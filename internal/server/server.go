@@ -123,6 +123,7 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 			protected.Post("/jobs", s.handleCreateJob)
 			protected.Get("/jobs/{id}", s.handleGetJob)
 			protected.Get("/jobs/{id}/steps", s.handleGetJobSteps)
+			protected.Get("/jobs/{id}/steps/{stepId}/log", s.handleGetStepLog)
 			protected.Post("/jobs/{id}/cancel", s.handleCancelJob)
 			protected.Post("/jobs/{id}/retry", s.handleRetryJob)
 			protected.Post("/jobs/{id}/clarification", s.handleClarification)

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { RefreshCw, AlertTriangle, PlusCircle, ArrowLeft } from 'lucide-react';
 import { Job, Project } from '../types/api';
 import { apiFetch } from '../lib/api';
 import { KanbanColumn } from '../components/KanbanColumn';
 import { ProjectFilter } from '../components/ProjectFilter';
 import { Link } from '../lib/router';
+import { useSSE } from '../hooks/useSSE';
 
 interface BoardPageProps {
   onOpenNewJob: () => void;
@@ -70,7 +71,7 @@ export function BoardPage({ onOpenNewJob }: BoardPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -95,11 +96,14 @@ export function BoardPage({ onOpenNewJob }: BoardPageProps) {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
+
+  // Live SSE listener: auto-update kanban board on pipeline events (UI-5)
+  useSSE(loadData);
 
   const filteredJobs = selectedProjectId
     ? jobs.filter((j) => j.project_id === selectedProjectId)

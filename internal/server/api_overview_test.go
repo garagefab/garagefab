@@ -5,9 +5,10 @@
 // Integration Test: Overview REST API (UI-1, SEC-3).
 //
 // Verifies that:
-// 1. Unauthenticated requests to /api/overview are rejected with 401.
-// 2. Authenticated requests return accurate job counts, attention items,
-//    and recent events.
+//  1. Unauthenticated requests to /api/overview are rejected with 401.
+//  2. Authenticated requests return accurate job counts, attention items,
+//     and recent events.
+//
 // ==============================================================================
 package server_test
 
