@@ -42,13 +42,15 @@ import (
 
 // Scheduler manages concurrent job execution according to global concurrency limits (SCH-1..4).
 type Scheduler struct {
-	store         Store          // Persistence port for querying queue and running counts
-	engine        *Engine        // Pipeline engine for executing admitted jobs
-	maxConcurrent int            // Maximum concurrent active jobs (SCH-1)
-	pollInterval  time.Duration  // Periodic fallback poll interval
-	wakeCh        chan struct{}  // Reactive signal channel to trigger immediate scheduling
-	activeWg      sync.WaitGroup // WaitGroup tracking active job goroutines for clean shutdown
-	runningJobs   sync.Map       // Map[int64]context.CancelFunc for active job cancellation
+	store           Store                 // Persistence port for querying queue and running counts
+	engine          *Engine               // Pipeline engine for executing admitted jobs
+	maxConcurrent   int                   // Maximum concurrent active jobs (SCH-1)
+	pollInterval    time.Duration         // Periodic fallback poll interval
+	wakeCh          chan struct{}         // Reactive signal channel to trigger immediate scheduling
+	activeWg        sync.WaitGroup        // WaitGroup tracking active job goroutines for clean shutdown
+	runningJobs     sync.Map              // Map[int64]context.CancelFunc for active job cancellation
+	jobProjectMap   sync.Map              // Map[int64]int64 (jobID -> projectID) for per-project tracking
+	projCfgProvider ProjectConfigProvider // Optional project config provider for per-project limits (SCH-2)
 }
 
 // NewScheduler creates a new scheduler with concurrency limits.
@@ -66,6 +68,22 @@ func NewScheduler(store Store, engine *Engine, maxConcurrent int) *Scheduler {
 	// Connect engine's wake notification directly to scheduler's Wake method
 	engine.SetWakeFunc(s.Wake)
 	return s
+}
+
+// SetProjectConfigProvider registers the project configuration provider for project limits (SCH-2).
+func (s *Scheduler) SetProjectConfigProvider(p ProjectConfigProvider) {
+	s.projCfgProvider = p
+}
+
+func (s *Scheduler) countInMemoryForProject(projectID int64) int {
+	var count int
+	s.jobProjectMap.Range(func(key, val any) bool {
+		if pID, ok := val.(int64); ok && pID == projectID {
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 // Wake notifies the scheduler to inspect the queue immediately without waiting for the ticker.
@@ -145,9 +163,29 @@ func (s *Scheduler) scheduleNext(ctx context.Context) {
 			continue // Do NOT break: continue to admit subsequent queued jobs (SCH-3)!
 		}
 
+		// Project-level concurrency limit check (SCH-2)
+		if s.projCfgProvider != nil {
+			project, pErr := s.store.GetProject(ctx, job.ProjectID)
+			if pErr == nil && project != nil {
+				cfg, cErr := s.projCfgProvider.GetProjectConfig(ctx, project.RepoPath)
+				if cErr == nil && cfg != nil && cfg.MaxConcurrentJobs > 0 {
+					inMemForProj := s.countInMemoryForProject(job.ProjectID)
+					dbRunningForProj, _ := s.store.CountRunningJobsByProject(ctx, job.ProjectID)
+					projRunning := inMemForProj
+					if dbRunningForProj > projRunning {
+						projRunning = dbRunningForProj
+					}
+					if projRunning >= cfg.MaxConcurrentJobs {
+						continue // Project limit saturated; skip to next candidate (SCH-2)
+					}
+				}
+			}
+		}
+
 		// Create a cancellable context dedicated to this specific job run
 		jobCtx, cancel := context.WithCancel(ctx)
 		s.runningJobs.Store(job.ID, cancel)
+		s.jobProjectMap.Store(job.ID, job.ProjectID)
 		s.activeWg.Add(1)
 		admitted++
 
@@ -155,6 +193,7 @@ func (s *Scheduler) scheduleNext(ctx context.Context) {
 		go func(j *Job, cancelFn context.CancelFunc) {
 			defer s.activeWg.Done()
 			defer s.runningJobs.Delete(j.ID)
+			defer s.jobProjectMap.Delete(j.ID)
 			defer cancelFn()
 
 			slog.Info("scheduler: admitting job", "job_id", j.ID, "title", j.Title)

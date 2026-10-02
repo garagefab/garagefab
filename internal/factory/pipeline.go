@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -49,24 +50,46 @@ var (
 
 // Engine orchestrates pipeline execution across stages (PIP-1..5).
 type Engine struct {
-	store       Store           // Persistence port
-	wtMgr       WorktreeManager // Worktree lifecycle port
-	agentRunner AgentRunner     // AI agent execution port
-	cmdRunner   CommandRunner   // Command runner port
-	logBaseDir  string          // Base path on disk for step logs (~/.garagefab/logs)
+	store             Store                 // Persistence port
+	wtMgr             WorktreeManager       // Worktree lifecycle port
+	agentRunner       AgentRunner           // AI agent execution port
+	cmdRunner         CommandRunner         // Command runner port
+	guardrailRunner   GuardrailRunner       // Guardrail runner port (GRD-1..4)
+	projCfgProvider   ProjectConfigProvider // Project configuration loader (architecture.md §14)
+	maxRepairAttempts int                   // Maximum automated repair loop attempts (default 3, COD-4)
+	logBaseDir        string                // Base path on disk for step logs (~/.garagefab/logs)
 
-	executingJobs sync.Map // Thread-safe set tracking actively executing job IDs (PIP-5)
-	wakeFn        func()   // Callback notifying scheduler when a job finishes or yields
+	executingJobs    sync.Map // Thread-safe set tracking actively executing job IDs (PIP-5)
+	activeJobCancels sync.Map // Map[int64]context.CancelFunc for terminating active jobs (PIP-6)
+	wakeFn           func()   // Callback notifying scheduler when a job finishes or yields
 }
 
 // NewEngine creates a new pipeline engine instance with injected port dependencies.
 func NewEngine(store Store, wtMgr WorktreeManager, agentRunner AgentRunner, cmdRunner CommandRunner, logBaseDir string) *Engine {
 	return &Engine{
-		store:       store,
-		wtMgr:       wtMgr,
-		agentRunner: agentRunner,
-		cmdRunner:   cmdRunner,
-		logBaseDir:  logBaseDir,
+		store:             store,
+		wtMgr:             wtMgr,
+		agentRunner:       agentRunner,
+		cmdRunner:         cmdRunner,
+		maxRepairAttempts: 3,
+		logBaseDir:        logBaseDir,
+	}
+}
+
+// SetGuardrailRunner registers the guardrail verification runner (GRD-1..4).
+func (e *Engine) SetGuardrailRunner(g GuardrailRunner) {
+	e.guardrailRunner = g
+}
+
+// SetProjectConfigProvider registers the provider for loading repo project.yaml configs.
+func (e *Engine) SetProjectConfigProvider(p ProjectConfigProvider) {
+	e.projCfgProvider = p
+}
+
+// SetMaxRepairAttempts sets the maximum repair loop iterations (default 3, COD-4).
+func (e *Engine) SetMaxRepairAttempts(n int) {
+	if n > 0 {
+		e.maxRepairAttempts = n
 	}
 }
 
@@ -90,24 +113,44 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	}
 	defer e.executingJobs.Delete(jobID) // Ensure job lock is cleared when function exits
 
-	job, err := e.store.GetJob(ctx, jobID)
+	jobCtx, jobCancel := context.WithCancel(ctx)
+	defer jobCancel()
+	e.activeJobCancels.Store(jobID, jobCancel)
+	defer e.activeJobCancels.Delete(jobID)
+
+	job, err := e.store.GetJob(jobCtx, jobID)
 	if err != nil {
 		return fmt.Errorf("factory: get job %d: %w", jobID, err)
 	}
 
-	project, err := e.store.GetProject(ctx, job.ProjectID)
+	project, err := e.store.GetProject(jobCtx, job.ProjectID)
 	if err != nil {
 		return fmt.Errorf("factory: get project %d: %w", job.ProjectID, err)
 	}
 
+	// Load per-project configuration if available (architecture.md §14)
+	var projCfg *ProjectConfig
+	if e.projCfgProvider != nil {
+		cfg, pErr := e.projCfgProvider.GetProjectConfig(jobCtx, project.RepoPath)
+		if pErr == nil && cfg != nil {
+			projCfg = cfg
+		}
+	}
+	if projCfg == nil {
+		projCfg = &ProjectConfig{
+			BaseRef: project.BaseRef,
+		}
+		projCfg.Guardrails.ProtectedPaths = []string{"**/*_test.go"}
+	}
+
 	// 1. Ensure Git Worktree exists (WKT-1)
 	if job.WorktreePath == "" {
-		wtInfo, err := e.wtMgr.Create(ctx, project.RepoPath, project.Name, job.ID, project.BaseRef)
+		wtInfo, err := e.wtMgr.Create(jobCtx, project.RepoPath, project.Name, job.ID, project.BaseRef)
 		if err != nil {
 			// Persist failure state and audit log on worktree creation error
-			_ = e.store.InTx(ctx, func(tx StoreTx) error {
-				_ = tx.UpdateJobState(ctx, job.ID, job.Stage, StatusFailed)
-				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"status":%q,"error":%q}`, StatusFailed, err.Error()))
+			_ = e.store.InTx(jobCtx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(jobCtx, job.ID, job.Stage, StatusFailed)
+				_ = tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"status":%q,"error":%q}`, StatusFailed, err.Error()))
 				return nil
 			})
 			return fmt.Errorf("factory: create worktree: %w", err)
@@ -119,103 +162,27 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		job.HeadSHA = wtInfo.BaseSHA
 
 		// Persist worktree coordinates inside a transaction
-		err = e.store.InTx(ctx, func(tx StoreTx) error {
-			return tx.UpdateJobWorktree(ctx, job.ID, wtInfo.Path, wtInfo.Branch, wtInfo.BaseSHA)
+		err = e.store.InTx(jobCtx, func(tx StoreTx) error {
+			return tx.UpdateJobWorktree(jobCtx, job.ID, wtInfo.Path, wtInfo.Branch, wtInfo.BaseSHA)
 		})
 		if err != nil {
 			return fmt.Errorf("factory: persist worktree info: %w", err)
 		}
 	}
 
-	// 2. Stage 04_Coding: AI Agent writes code
+	// 2. Stage 04_Coding: AI Agent writes code and undergoes automated repair loop (COD-1..7, GRD-1..4)
 	if job.Stage == StageIntent || job.Stage == StageCoding {
-		// Transition state to 04_Coding / running
-		err = e.store.InTx(ctx, func(tx StoreTx) error {
-			if err := tx.UpdateJobState(ctx, job.ID, StageCoding, StatusRunning); err != nil {
-				return err
-			}
-			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageCoding, StatusRunning))
-		})
-		if err != nil {
-			return fmt.Errorf("factory: transition to coding: %w", err)
+		if err := e.executeCodingStage(jobCtx, job, project, projCfg); err != nil {
+			return err
 		}
-		job.Stage = StageCoding
-		job.Status = StatusRunning
-
-		// Initialize StepRun record
-		logPath := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), "step_coding.log")
-		step := &StepRun{
-			JobID:     job.ID,
-			Stage:     StageCoding,
-			Kind:      StepKindAgent,
-			Attempt:   1,
-			Executor:  "agent",
-			Status:    StepStatusRunning,
-			LogPath:   logPath,
-			StartedAt: time.Now().UTC(),
-		}
-		if err := e.store.CreateStepRun(ctx, step); err != nil {
-			return fmt.Errorf("factory: create coding step run: %w", err)
-		}
-
-		// Execute Coding Agent
-		res, err := e.agentRunner.Run(ctx, AgentRequest{
-			JobID:        job.ID,
-			Stage:        StageCoding,
-			WorktreePath: job.WorktreePath,
-			Prompt:       job.Intent,
-			ProjectName:  project.Name,
-			LogPath:      logPath,
-			OnProcessStart: func(pid, pgid int, startTime int64) {
-				_ = e.store.CreateProcessRecord(ctx, step.ID, pid, pgid, startTime)
-			},
-		})
-
-		now := time.Now().UTC()
-		step.EndedAt = &now
-
-		// Handle Coding failure
-		if err != nil || (res != nil && res.ExitCode != 0) {
-			step.Status = StepStatusFail
-			step.FailureCategory = FailureFlawed
-			if res != nil {
-				code := res.ExitCode
-				step.ExitCode = &code
-			}
-			_ = e.store.UpdateStepRun(ctx, step)
-
-			_ = e.store.InTx(ctx, func(tx StoreTx) error {
-				_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
-				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageCoding, StatusFailed))
-				return nil
-			})
-			return fmt.Errorf("factory: coding step failed: %w", err)
-		}
-
-		// Record successful coding step
-		step.Status = StepStatusSuccess
-		code := 0
-		step.ExitCode = &code
-		_ = e.store.UpdateStepRun(ctx, step)
-
-		// Create Checkpoint commit (WKT-5, COD-9)
-		headSHA, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "coding")
-		if err != nil {
-			return fmt.Errorf("factory: coding checkpoint: %w", err)
-		}
-		job.HeadSHA = headSHA
-
-		_ = e.store.InTx(ctx, func(tx StoreTx) error {
-			return tx.UpdateJobHead(ctx, job.ID, headSHA)
-		})
 	}
 
 	// 3. Stage 05_Independent_Review: Review agent inspects diff and risk
-	err = e.store.InTx(ctx, func(tx StoreTx) error {
-		if err := tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusRunning); err != nil {
+	err = e.store.InTx(jobCtx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(jobCtx, job.ID, StageIndependentReview, StatusRunning); err != nil {
 			return err
 		}
-		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageIndependentReview, StatusRunning))
+		return tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageIndependentReview, StatusRunning))
 	})
 	if err != nil {
 		return fmt.Errorf("factory: transition to review: %w", err)
@@ -235,19 +202,19 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		LogPath:   logPathReview,
 		StartedAt: time.Now().UTC(),
 	}
-	if err := e.store.CreateStepRun(ctx, stepReview); err != nil {
+	if err := e.store.CreateStepRun(jobCtx, stepReview); err != nil {
 		return fmt.Errorf("factory: create review step run: %w", err)
 	}
 
 	// Execute Review Agent
-	resReview, err := e.agentRunner.Run(ctx, AgentRequest{
+	resReview, err := e.agentRunner.Run(jobCtx, AgentRequest{
 		JobID:        job.ID,
 		Stage:        StageIndependentReview,
 		WorktreePath: job.WorktreePath,
 		ProjectName:  project.Name,
 		LogPath:      logPathReview,
 		OnProcessStart: func(pid, pgid int, startTime int64) {
-			_ = e.store.CreateProcessRecord(ctx, stepReview.ID, pid, pgid, startTime)
+			_ = e.store.CreateProcessRecord(jobCtx, stepReview.ID, pid, pgid, startTime)
 		},
 	})
 
@@ -257,11 +224,15 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	if err != nil || (resReview != nil && resReview.ExitCode != 0) {
 		stepReview.Status = StepStatusFail
 		stepReview.FailureCategory = FailureFlawed
-		_ = e.store.UpdateStepRun(ctx, stepReview)
+		if resReview != nil {
+			code := resReview.ExitCode
+			stepReview.ExitCode = &code
+		}
+		_ = e.store.UpdateStepRun(jobCtx, stepReview)
 
-		_ = e.store.InTx(ctx, func(tx StoreTx) error {
-			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
-			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageIndependentReview, StatusFailed))
+		_ = e.store.InTx(jobCtx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(jobCtx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageIndependentReview, StatusFailed))
 			return nil
 		})
 		return fmt.Errorf("factory: review step failed: %w", err)
@@ -270,22 +241,363 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	stepReview.Status = StepStatusSuccess
 	codeReview := 0
 	stepReview.ExitCode = &codeReview
-	_ = e.store.UpdateStepRun(ctx, stepReview)
+	_ = e.store.UpdateStepRun(jobCtx, stepReview)
 
-	// 4. Transition to Human Approval Gate (Stage 06_Human_Approval_Gate / awaiting_approval) (SCH-4)
-	err = e.store.InTx(ctx, func(tx StoreTx) error {
-		if err := tx.UpdateJobState(ctx, job.ID, StageHumanApprovalGate, StatusAwaitingApproval); err != nil {
+	// Create Checkpoint commit for review
+	headSHAReview, err := e.wtMgr.Checkpoint(jobCtx, job.WorktreePath, job.ID, "review")
+	if err != nil {
+		return fmt.Errorf("factory: review checkpoint: %w", err)
+	}
+	job.HeadSHA = headSHAReview
+
+	_ = e.store.InTx(jobCtx, func(tx StoreTx) error {
+		return tx.UpdateJobHead(jobCtx, job.ID, headSHAReview)
+	})
+
+	// 4. Stage 06_Human_Approval_Gate
+	err = e.store.InTx(jobCtx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(jobCtx, job.ID, StageHumanApprovalGate, StatusAwaitingApproval); err != nil {
 			return err
 		}
-		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageHumanApprovalGate, StatusAwaitingApproval))
+		return tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageHumanApprovalGate, StatusAwaitingApproval))
 	})
 	if err != nil {
-		return fmt.Errorf("factory: transition to approval gate: %w", err)
+		return fmt.Errorf("factory: transition to gate: %w", err)
 	}
 
-	// Notify scheduler that this job is now waiting at a gate, freeing a concurrency slot
+	job.Stage = StageHumanApprovalGate
+	job.Status = StatusAwaitingApproval
 	e.notifyWake()
 	return nil
+}
+
+// executeCodingStage orchestrates the AI coding agent and the automated repair loop (COD-1..7, GRD-1..4).
+// It re-runs all verification command groups (build -> test -> lint) upon repair (COD-6).
+func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Project, projCfg *ProjectConfig) error {
+	// Transition state to 04_Coding / running
+	err := e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(ctx, job.ID, StageCoding, StatusRunning); err != nil {
+			return err
+		}
+		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageCoding, StatusRunning))
+	})
+	if err != nil {
+		return fmt.Errorf("factory: transition to coding: %w", err)
+	}
+	job.Stage = StageCoding
+	job.Status = StatusRunning
+
+	maxAttempts := e.maxRepairAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	stepStartSHA := job.HeadSHA
+	if stepStartSHA == "" {
+		stepStartSHA = job.BaseSHA
+	}
+
+	var repairFeedback string
+	attempt := 0
+
+	for attempt < maxAttempts {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		currentAttempt := attempt + 1
+		logFilename := "step_coding.log"
+		if currentAttempt > 1 {
+			logFilename = fmt.Sprintf("step_coding_attempt_%d.log", currentAttempt)
+		}
+		logPath := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), logFilename)
+
+		step := &StepRun{
+			JobID:     job.ID,
+			Stage:     StageCoding,
+			Kind:      StepKindAgent,
+			Attempt:   currentAttempt,
+			Executor:  "agent",
+			Status:    StepStatusRunning,
+			LogPath:   logPath,
+			StartedAt: time.Now().UTC(),
+		}
+		if err := e.store.CreateStepRun(ctx, step); err != nil {
+			return fmt.Errorf("factory: create coding step run: %w", err)
+		}
+
+		prompt := job.Intent
+		if repairFeedback != "" {
+			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", job.Intent, repairFeedback)
+		}
+
+		res, err := e.agentRunner.Run(ctx, AgentRequest{
+			JobID:        job.ID,
+			Stage:        StageCoding,
+			WorktreePath: job.WorktreePath,
+			Prompt:       prompt,
+			ProjectName:  project.Name,
+			LogPath:      logPath,
+			OnProcessStart: func(pid, pgid int, startTime int64) {
+				_ = e.store.CreateProcessRecord(ctx, step.ID, pid, pgid, startTime)
+			},
+		})
+
+		now := time.Now().UTC()
+		step.EndedAt = &now
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		var agentFailed bool
+		var failureInput FailureInput
+		failureInput.Attempt = currentAttempt
+		failureInput.MaxAttempts = maxAttempts
+
+		if err != nil || (res != nil && res.ExitCode != 0) {
+			agentFailed = true
+			code := 1
+			if res != nil {
+				code = res.ExitCode
+			}
+			step.ExitCode = &code
+			failureInput.ExitCode = code
+			if err != nil {
+				failureInput.Stderr = err.Error()
+			}
+		} else {
+			// Check empty diff against stepStartSHA (COD-7)
+			diff, diffErr := e.wtMgr.Diff(ctx, job.WorktreePath, stepStartSHA)
+			if diffErr == nil && strings.TrimSpace(diff) == "" {
+				agentFailed = true
+				code := 0
+				step.ExitCode = &code
+				failureInput.EmptyDiff = true
+			}
+		}
+
+		if agentFailed {
+			category := CategorizeFailure(failureInput)
+			step.Status = StepStatusFail
+			step.FailureCategory = category
+			_ = e.store.UpdateStepRun(ctx, step)
+
+			if category == FailureFlawed && currentAttempt < maxAttempts {
+				if failureInput.EmptyDiff {
+					repairFeedback = "Agent completed with exit code 0 but made no changes to files (empty diff). Please implement the requested code changes."
+				} else if err != nil {
+					repairFeedback = fmt.Sprintf("Agent process failed: %s", err.Error())
+				} else {
+					repairFeedback = fmt.Sprintf("Agent exited with non-zero exit code %d", failureInput.ExitCode)
+				}
+				attempt++
+				continue
+			}
+
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageCoding, StatusFailed, category))
+				return nil
+			})
+			return fmt.Errorf("factory: coding step failed with category %s", category)
+		}
+
+		// Agent passed
+		step.Status = StepStatusSuccess
+		code := 0
+		step.ExitCode = &code
+		_ = e.store.UpdateStepRun(ctx, step)
+
+		// Guardrail check: protected_paths (GRD-1)
+		var guardrailFailed bool
+		if e.guardrailRunner != nil && len(projCfg.Guardrails.ProtectedPaths) > 0 {
+			violations, gErr := e.guardrailRunner.CheckProtectedPaths(ctx, job.WorktreePath, stepStartSHA, projCfg.Guardrails.ProtectedPaths)
+			if gErr == nil && len(violations) > 0 {
+				guardrailFailed = true
+				var paths []string
+				for _, v := range violations {
+					paths = append(paths, v.Path)
+				}
+				category := CategorizeFailure(FailureInput{
+					GuardrailViolation: true,
+					Attempt:            currentAttempt,
+					MaxAttempts:        maxAttempts,
+				})
+				if category == FailureFlawed && currentAttempt < maxAttempts {
+					repairFeedback = fmt.Sprintf("Guardrail violation: you modified existing protected file(s): %s. You must restore them.", strings.Join(paths, ", "))
+					attempt++
+					continue
+				}
+				_ = e.store.InTx(ctx, func(tx StoreTx) error {
+					_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+					_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageCoding, StatusFailed, category))
+					return nil
+				})
+				return fmt.Errorf("factory: guardrail violation: %v", paths)
+			}
+		}
+
+		// Custom guardrail commands (GRD-3)
+		if !guardrailFailed && len(projCfg.Guardrails.Commands) > 0 && e.cmdRunner != nil {
+			var cmdFailed bool
+			for _, gCmd := range projCfg.Guardrails.Commands {
+				cRes, cErr := e.cmdRunner.Run(ctx, CommandOptions{
+					WorkDir: job.WorktreePath,
+					Command: gCmd,
+				})
+				if cErr != nil || (cRes != nil && cRes.ExitCode != 0) {
+					cmdFailed = true
+					exitCode := 1
+					var stderr, stdout string
+					if cRes != nil {
+						exitCode = cRes.ExitCode
+						stderr = cRes.Stderr
+						stdout = cRes.Stdout
+					}
+					category := CategorizeFailure(FailureInput{
+						ExitCode:    exitCode,
+						Stdout:      stdout,
+						Stderr:      stderr,
+						Attempt:     currentAttempt,
+						MaxAttempts: maxAttempts,
+					})
+					if category == FailureFlawed && currentAttempt < maxAttempts {
+						repairFeedback = fmt.Sprintf("Custom guardrail command failed (%s):\n%s\n%s", gCmd, stdout, stderr)
+						attempt++
+						break
+					}
+					_ = e.store.InTx(ctx, func(tx StoreTx) error {
+						_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+						_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageCoding, StatusFailed, category))
+						return nil
+					})
+					return fmt.Errorf("factory: custom guardrail command failed: %s", gCmd)
+				}
+			}
+			if cmdFailed {
+				continue
+			}
+		}
+
+		// Verification Commands: Build -> Test -> Lint (COD-2, COD-3, COD-6)
+		var commandFailed bool
+		commandGroups := []struct {
+			name string
+			cmds []string
+		}{
+			{"build", projCfg.Commands.Build},
+			{"test", projCfg.Commands.Test},
+			{"lint", projCfg.Commands.Lint},
+		}
+
+		for _, grp := range commandGroups {
+			if len(grp.cmds) == 0 {
+				skipStep := &StepRun{
+					JobID:     job.ID,
+					Stage:     StageCoding,
+					Kind:      StepKindCommand,
+					Attempt:   currentAttempt,
+					Executor:  grp.name,
+					Status:    StepStatusSkipped,
+					StartedAt: time.Now().UTC(),
+				}
+				_ = e.store.CreateStepRun(ctx, skipStep)
+				now := time.Now().UTC()
+				skipStep.EndedAt = &now
+				_ = e.store.UpdateStepRun(ctx, skipStep)
+				continue
+			}
+
+			for _, cmdStr := range grp.cmds {
+				cmdLogPath := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), fmt.Sprintf("step_cmd_%s_%d.log", grp.name, currentAttempt))
+				cmdStep := &StepRun{
+					JobID:     job.ID,
+					Stage:     StageCoding,
+					Kind:      StepKindCommand,
+					Attempt:   currentAttempt,
+					Executor:  grp.name,
+					Status:    StepStatusRunning,
+					LogPath:   cmdLogPath,
+					StartedAt: time.Now().UTC(),
+				}
+				_ = e.store.CreateStepRun(ctx, cmdStep)
+
+				cRes, cErr := e.cmdRunner.Run(ctx, CommandOptions{
+					WorkDir: job.WorktreePath,
+					Command: cmdStr,
+					LogPath: cmdLogPath,
+					OnProcessStart: func(pid, pgid int, startTime int64) {
+						_ = e.store.CreateProcessRecord(ctx, cmdStep.ID, pid, pgid, startTime)
+					},
+				})
+
+				now := time.Now().UTC()
+				cmdStep.EndedAt = &now
+
+				if cErr != nil || (cRes != nil && cRes.ExitCode != 0) {
+					commandFailed = true
+					exitCode := 1
+					var stderr, stdout string
+					if cRes != nil {
+						exitCode = cRes.ExitCode
+						stderr = cRes.Stderr
+						stdout = cRes.Stdout
+					}
+					cmdStep.ExitCode = &exitCode
+					category := CategorizeFailure(FailureInput{
+						ExitCode:    exitCode,
+						Stdout:      stdout,
+						Stderr:      stderr,
+						Attempt:     currentAttempt,
+						MaxAttempts: maxAttempts,
+					})
+					cmdStep.Status = StepStatusFail
+					cmdStep.FailureCategory = category
+					_ = e.store.UpdateStepRun(ctx, cmdStep)
+
+					if category == FailureFlawed && currentAttempt < maxAttempts {
+						repairFeedback = fmt.Sprintf("Command '%s' failed with exit code %d:\n%s\n%s", cmdStr, exitCode, stdout, stderr)
+						attempt++
+						break
+					}
+
+					_ = e.store.InTx(ctx, func(tx StoreTx) error {
+						_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+						_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageCoding, StatusFailed, category))
+						return nil
+					})
+					return fmt.Errorf("factory: command '%s' failed with category %s", cmdStr, category)
+				}
+
+				code := 0
+				cmdStep.ExitCode = &code
+				cmdStep.Status = StepStatusSuccess
+				_ = e.store.UpdateStepRun(ctx, cmdStep)
+			}
+
+			if commandFailed {
+				break
+			}
+		}
+
+		if commandFailed {
+			continue
+		}
+
+		// All checks passed!
+		break
+	}
+
+	// Create Checkpoint commit (WKT-5, COD-9)
+	headSHA, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "coding")
+	if err != nil {
+		return fmt.Errorf("factory: coding checkpoint: %w", err)
+	}
+	job.HeadSHA = headSHA
+
+	return e.store.InTx(ctx, func(tx StoreTx) error {
+		return tx.UpdateJobHead(ctx, job.ID, headSHA)
+	})
 }
 
 // Approve records human approval and completes the refactor job (APR-5, APR-7, DLV-4).
@@ -389,6 +701,13 @@ func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 
 	if job.Status == StatusDone || job.Status == StatusCancelled {
 		return fmt.Errorf("%w: cannot cancel terminal job in status %s", ErrInvalidState, job.Status)
+	}
+
+	// Signal and abort active execution context if job is currently running (PIP-6)
+	if cancelVal, ok := e.activeJobCancels.Load(jobID); ok {
+		if cancelFn, isCancel := cancelVal.(context.CancelFunc); isCancel {
+			cancelFn()
+		}
 	}
 
 	project, err := e.store.GetProject(ctx, job.ProjectID)

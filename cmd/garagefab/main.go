@@ -129,6 +129,13 @@ var startCmd = &cobra.Command{
 		}
 		defer db.Close()
 
+		// 4b. Crash Recovery & Orphan Process Reclamation (RCV-2, RCV-3).
+		// Inspect active process records from previous runs, terminate orphan process groups,
+		// and mark interrupted jobs before starting scheduler or HTTP listener.
+		if err := RecoverOrphanProcesses(context.Background(), db); err != nil {
+			slog.Warn("startup crash recovery warning", "error", err)
+		}
+
 		// 5. Dependency Injection / Wiring (Hexagonal Architecture).
 		// 'factory' defines interfaces (ports) and cannot import 'store' or 'worker' directly.
 		// These adapters bridge the concrete implementations to the factory's interfaces.
@@ -136,8 +143,16 @@ var startCmd = &cobra.Command{
 		wtMgr := newFactoryWorktreeAdapter(worktree.NewManager(filepath.Join(cfg.DataDir, "worktrees")))
 		fakeAgent := newFactoryAgentAdapter(agent.NewFakeRunner())
 		cmdRunner := newFactoryCommandAdapter(command.NewRunner())
+		guardrailAdapter := newFactoryGuardrailAdapter()
+		projCfgAdapter := newFactoryProjectConfigAdapter()
+
 		engine := factory.NewEngine(storeAdapter, wtMgr, fakeAgent, cmdRunner, filepath.Join(cfg.DataDir, "logs"))
+		engine.SetGuardrailRunner(guardrailAdapter)
+		engine.SetProjectConfigProvider(projCfgAdapter)
+		engine.SetMaxRepairAttempts(cfg.Engine.MaxRepairAttempts)
+
 		scheduler := factory.NewScheduler(storeAdapter, engine, cfg.Engine.MaxConcurrentJobs)
+		scheduler.SetProjectConfigProvider(projCfgAdapter)
 
 		// Start the job scheduler in a background goroutine (lightweight async thread in Go).
 		schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
@@ -164,7 +179,7 @@ var startCmd = &cobra.Command{
 			openBrowser(dashboardURL)
 		}
 
-		// 8. Graceful shutdown handler.
+		// 8. Graceful shutdown handler (RCV-4).
 		// In Go, channels (chan) are used to receive OS signals.
 		// signal.Notify redirects SIGINT (Ctrl+C) and SIGTERM (kill) into sigCh.
 		sigCh := make(chan os.Signal, 1)
@@ -173,6 +188,9 @@ var startCmd = &cobra.Command{
 
 		fmt.Println("\nShutting down gracefully...")
 
+		// Stop admitting new jobs immediately
+		cancelScheduler()
+
 		// Allow active HTTP requests up to 5 seconds to complete cleanly before terminating.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -180,9 +198,8 @@ var startCmd = &cobra.Command{
 			slog.Error("error during server shutdown", "error", err)
 		}
 
-		// Graceful Worker Drain: cancel scheduler context and await completion of all active
+		// Graceful Worker Drain: await completion of all active
 		// job goroutines BEFORE db.Close() runs via defer.
-		cancelScheduler()
 		scheduler.Close()
 	},
 }
