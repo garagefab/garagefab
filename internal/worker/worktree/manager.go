@@ -244,8 +244,8 @@ func (m *Manager) Remove(ctx context.Context, repoPath, worktreePath, branchName
 	return nil
 }
 
-// Diff returns the git diff output from the merge-base of baseSHA and HEAD (WKT-3).
-// This accurately reflects all modifications introduced by the job.
+// Diff returns the git diff output from the merge-base of baseSHA and the current worktree (WKT-3, COD-9).
+// This accurately reflects all modifications introduced by the job, including uncommitted edits and newly added files.
 func (m *Manager) Diff(ctx context.Context, worktreePath, baseSHA string) (string, error) {
 	// Find the common ancestor commit
 	mbCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "merge-base", baseSHA, "HEAD")
@@ -255,8 +255,12 @@ func (m *Manager) Diff(ctx context.Context, worktreePath, baseSHA string) (strin
 	}
 	mergeBase := strings.TrimSpace(string(mbOut))
 
-	// Compute diff between merge base and current HEAD
-	diffCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", mergeBase, "HEAD")
+	// Intent-to-add untracked files so new files appear in the diff (COD-7, COD-9)
+	addNCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "add", "-N", ".")
+	_ = addNCmd.Run()
+
+	// Compute diff between merge base and current worktree
+	diffCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", mergeBase)
 	diffOut, err := diffCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("worktree: diff: %w", err)

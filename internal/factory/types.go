@@ -253,3 +253,40 @@ type StoreTx interface {
 	RecordEvent(ctx context.Context, jobID int64, eventType string, payload string) error
 	RecordApproval(ctx context.Context, a *Approval) error
 }
+
+// GuardrailViolation represents an existing protected file that was modified or deleted (GRD-1).
+type GuardrailViolation struct {
+	Path   string `json:"path"`
+	Status string `json:"status"` // "M", "D", "R"
+}
+
+// GuardrailRunner defines the outbound port for validating workspace integrity and path restrictions (GRD-1..4).
+type GuardrailRunner interface {
+	CheckProtectedPaths(ctx context.Context, workDir, stepStartSHA string, patterns []string) ([]GuardrailViolation, error)
+}
+
+// ProjectCommands defines test/build/lint verification commands for a project (COD-2, COD-3).
+type ProjectCommands struct {
+	Build []string `yaml:"build"`
+	Test  []string `yaml:"test"`
+	Lint  []string `yaml:"lint"`
+}
+
+// ProjectGuardrails defines custom path patterns and verification scripts (GRD-1, GRD-3).
+type ProjectGuardrails struct {
+	ProtectedPaths []string `yaml:"protected_paths"`
+	Commands       []string `yaml:"commands"`
+}
+
+// ProjectConfig defines per-project configuration loaded from `<repo>/.garagefab/project.yaml`.
+type ProjectConfig struct {
+	BaseRef           string            `yaml:"base_ref"`
+	Commands          ProjectCommands   `yaml:"commands"`
+	Guardrails        ProjectGuardrails `yaml:"guardrails"`
+	MaxConcurrentJobs int               `yaml:"max_concurrent_jobs"`
+}
+
+// ProjectConfigProvider defines the outbound port to load per-project configuration.
+type ProjectConfigProvider interface {
+	GetProjectConfig(ctx context.Context, repoPath string) (*ProjectConfig, error)
+}

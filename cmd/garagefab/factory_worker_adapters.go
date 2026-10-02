@@ -30,6 +30,7 @@ package main
 import (
 	"context"
 
+	"github.com/garagefab/garagefab/internal/config"
 	"github.com/garagefab/garagefab/internal/factory"
 	"github.com/garagefab/garagefab/internal/worker/agent"
 	"github.com/garagefab/garagefab/internal/worker/command"
@@ -177,5 +178,64 @@ func (a *factoryCommandAdapter) Run(ctx context.Context, opts factory.CommandOpt
 		ExitCode: res.ExitCode,
 		Stdout:   res.Stdout,
 		Stderr:   res.Stderr,
+	}, nil
+}
+
+// ------------------------------------------------------------------------------
+// Guardrail Adapter
+// ------------------------------------------------------------------------------
+
+// factoryGuardrailAdapter adapts command package guardrail functions to satisfy factory.GuardrailRunner.
+type factoryGuardrailAdapter struct{}
+
+func newFactoryGuardrailAdapter() *factoryGuardrailAdapter {
+	return &factoryGuardrailAdapter{}
+}
+
+// CheckProtectedPaths evaluates git diff status against configured protected path globs (GRD-1).
+func (a *factoryGuardrailAdapter) CheckProtectedPaths(ctx context.Context, workDir, stepStartSHA string, patterns []string) ([]factory.GuardrailViolation, error) {
+	violations, err := command.CheckProtectedPaths(ctx, workDir, stepStartSHA, patterns)
+	if err != nil {
+		return nil, err
+	}
+	var res []factory.GuardrailViolation
+	for _, v := range violations {
+		res = append(res, factory.GuardrailViolation{
+			Path:   v.Path,
+			Status: v.Status,
+		})
+	}
+	return res, nil
+}
+
+// ------------------------------------------------------------------------------
+// Project Config Provider Adapter
+// ------------------------------------------------------------------------------
+
+// factoryProjectConfigAdapter loads project configuration files (project.yaml)
+// and maps them into factory domain ProjectConfig objects (architecture.md §14).
+type factoryProjectConfigAdapter struct{}
+
+func newFactoryProjectConfigAdapter() *factoryProjectConfigAdapter {
+	return &factoryProjectConfigAdapter{}
+}
+
+func (a *factoryProjectConfigAdapter) GetProjectConfig(ctx context.Context, repoPath string) (*factory.ProjectConfig, error) {
+	yamlCfg, err := config.LoadProjectConfig(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return &factory.ProjectConfig{
+		BaseRef: yamlCfg.BaseRef,
+		Commands: factory.ProjectCommands{
+			Build: yamlCfg.Commands.Build,
+			Test:  yamlCfg.Commands.Test,
+			Lint:  yamlCfg.Commands.Lint,
+		},
+		Guardrails: factory.ProjectGuardrails{
+			ProtectedPaths: yamlCfg.Guardrails.ProtectedPaths,
+			Commands:       yamlCfg.Guardrails.Commands,
+		},
+		MaxConcurrentJobs: yamlCfg.MaxConcurrentJobs,
 	}, nil
 }
