@@ -108,15 +108,22 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 		api.Group(func(protected chi.Router) {
 			protected.Use(s.authMiddleware)
 
-			// Project management routes (PRJ-1..5)
+			// Dashboard Overview route (UI-1)
+			protected.Get("/overview", s.handleGetOverview)
+
+			// Project management routes (PRJ-1..8)
 			protected.Get("/projects", s.handleListProjects)
 			protected.Post("/projects", s.handleCreateProject)
 			protected.Get("/projects/{id}", s.handleGetProject)
+			protected.Post("/projects/{id}/config-template", s.handleCreateProjectConfigTemplate)
+			protected.Post("/projects/config-template", s.handleCreateProjectConfigTemplate)
 
 			// Job lifecycle routes (INT-1, PIP-6, PIP-7)
 			protected.Get("/jobs", s.handleListJobs)
 			protected.Post("/jobs", s.handleCreateJob)
 			protected.Get("/jobs/{id}", s.handleGetJob)
+			protected.Get("/jobs/{id}/steps", s.handleGetJobSteps)
+			protected.Get("/jobs/{id}/steps/{stepId}/log", s.handleGetStepLog)
 			protected.Post("/jobs/{id}/cancel", s.handleCancelJob)
 			protected.Post("/jobs/{id}/retry", s.handleRetryJob)
 			protected.Post("/jobs/{id}/clarification", s.handleClarification)
@@ -127,13 +134,13 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 			// SSE Live Events Stream (LOG-4)
 			protected.Get("/events", s.handleEventsSSE)
 
-			// Interactive session-only routes (SEC-4, APR-7):
-			// Approvals and rejections strictly require an interactive browser cookie
-			// to prevent AI agents or scripts from approving their own work.
+			// Interactive session-only routes (SEC-4, APR-7, PRJ-8):
+			// Approvals, rejections, and project archiving strictly require an interactive browser cookie.
 			protected.Group(func(sessionOnly chi.Router) {
 				sessionOnly.Use(s.requireSessionOnlyMiddleware)
 				sessionOnly.Post("/jobs/{id}/approve", s.handleApproveJob)
 				sessionOnly.Post("/jobs/{id}/reject", s.handleRejectJob)
+				sessionOnly.Post("/projects/{id}/archive", s.handleArchiveProject)
 			})
 		})
 	})

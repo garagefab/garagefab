@@ -601,3 +601,103 @@ func TestForeignKeys_CascadeAndRestrict(t *testing.T) {
 		t.Errorf("expected step to be deleted by cascade, got %v", err)
 	}
 }
+
+// TestOverviewRepo_GetOverviewData_UI1 verifies requirement UI-1:
+// Overview metrics aggregation including status counts, attention items, and recent events.
+func TestOverviewRepo_GetOverviewData_UI1(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+
+	// 1. Create a project
+	p := &store.Project{Name: "p-overview", RepoPath: "/path/to/p-overview"}
+	if err := db.Projects().CreateProject(ctx, p); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	// 2. Create jobs in various statuses
+	jRunning := &store.Job{
+		ProjectID: p.ID,
+		WorkType:  store.WorkTypeFeature,
+		Title:     "Feature running",
+		Stage:     store.StageCoding,
+		Status:    store.StatusRunning,
+	}
+	if err := db.Jobs().CreateJob(ctx, jRunning); err != nil {
+		t.Fatalf("CreateJob jRunning failed: %v", err)
+	}
+
+	jClarify := &store.Job{
+		ProjectID: p.ID,
+		WorkType:  store.WorkTypeFeature,
+		Title:     "Needs Clarification Job",
+		Stage:     store.StageClarificationAndSpec,
+		Status:    store.StatusNeedsClarification,
+	}
+	if err := db.Jobs().CreateJob(ctx, jClarify); err != nil {
+		t.Fatalf("CreateJob jClarify failed: %v", err)
+	}
+
+	jDone := &store.Job{
+		ProjectID: p.ID,
+		WorkType:  store.WorkTypeRefactor,
+		Title:     "Completed Job",
+		Stage:     store.StageDone,
+		Status:    store.StatusDone,
+	}
+	if err := db.Jobs().CreateJob(ctx, jDone); err != nil {
+		t.Fatalf("CreateJob jDone failed: %v", err)
+	}
+
+	// 3. Create an event
+	ev := &store.Event{
+		JobID:   jClarify.ID,
+		Type:    "job.status_changed",
+		Payload: `{"status":"needs_clarification"}`,
+	}
+	if err := db.Events().CreateEvent(ctx, ev); err != nil {
+		t.Fatalf("CreateEvent failed: %v", err)
+	}
+
+	// 4. Fetch overview data
+	data, err := db.Overview().GetOverviewData(ctx)
+	if err != nil {
+		t.Fatalf("GetOverviewData failed: %v", err)
+	}
+
+	// Assertions for status counts (UI-1)
+	if data.JobCounts[store.StatusRunning] != 1 {
+		t.Errorf("expected 1 running job, got %d", data.JobCounts[store.StatusRunning])
+	}
+	if data.JobCounts[store.StatusNeedsClarification] != 1 {
+		t.Errorf("expected 1 needs_clarification job, got %d", data.JobCounts[store.StatusNeedsClarification])
+	}
+	if data.JobCounts[store.StatusDone] != 1 {
+		t.Errorf("expected 1 done job, got %d", data.JobCounts[store.StatusDone])
+	}
+	if data.JobCounts[store.StatusQueued] != 0 {
+		t.Errorf("expected 0 queued jobs, got %d", data.JobCounts[store.StatusQueued])
+	}
+
+	// Assertions for attention list (UI-1):
+	// needs_clarification is an attention item, done is NOT, running is NOT.
+	if len(data.AttentionList) != 1 {
+		t.Fatalf("expected 1 attention item, got %d", len(data.AttentionList))
+	}
+	if data.AttentionList[0].ID != jClarify.ID {
+		t.Errorf("expected attention job ID %d, got %d", jClarify.ID, data.AttentionList[0].ID)
+	}
+	if data.AttentionList[0].ProjectName != p.Name {
+		t.Errorf("expected attention project name %q, got %q", p.Name, data.AttentionList[0].ProjectName)
+	}
+
+	// Assertions for recent activity feed
+	if len(data.RecentActivity) != 1 {
+		t.Fatalf("expected 1 recent activity event, got %d", len(data.RecentActivity))
+	}
+	if data.RecentActivity[0].JobID != jClarify.ID {
+		t.Errorf("expected recent activity job ID %d, got %d", jClarify.ID, data.RecentActivity[0].JobID)
+	}
+	if data.RecentActivity[0].JobTitle != "Needs Clarification Job" {
+		t.Errorf("expected recent activity job title %q, got %q", "Needs Clarification Job", data.RecentActivity[0].JobTitle)
+	}
+}

@@ -283,6 +283,17 @@ func (r *JobRepo) CountRunningJobsByProject(ctx context.Context, projectID int64
 	return count, nil
 }
 
+// CountNonTerminalJobsByProject returns the count of active (non-done and non-cancelled) jobs for a project (PRJ-8).
+func (r *JobRepo) CountNonTerminalJobsByProject(ctx context.Context, projectID int64) (int, error) {
+	query := `SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status NOT IN ('done', 'cancelled')`
+	var count int
+	err := r.q.QueryRowContext(ctx, query, projectID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("store: count non-terminal jobs by project: %w", err)
+	}
+	return count, nil
+}
+
 // CountJobsByStatus returns a map of status -> count across all projects (UI-1 Overview).
 func (r *JobRepo) CountJobsByStatus(ctx context.Context) (map[string]int, error) {
 	query := `SELECT status, COUNT(*) FROM jobs GROUP BY status`
