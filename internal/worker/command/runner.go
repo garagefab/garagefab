@@ -145,6 +145,17 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		Setpgid: true,
 	}
 
+	// Process Group Cancellation Guardrail (RCV-1, SEC-6):
+	// When ctx is cancelled or expires, signal the entire process group (-PID)
+	// with SIGKILL so spawned child processes (sh children) are not left orphaned.
+	cmd.Cancel = func() error {
+		if cmd.Process != nil && cmd.Process.Pid > 0 {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cmd.WaitDelay = 3 * time.Second
+
 	// Set up pipes for stdout and stderr
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -201,6 +212,9 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	streamOutput := func(reader io.Reader, streamName string, buf *bytes.Buffer) {
 		defer wg.Done()
 		scanner := bufio.NewScanner(reader)
+		// Expand scanner buffer up to 2MB (default is 64KB) to prevent truncation on large output lines
+		scannerBuf := make([]byte, 64*1024)
+		scanner.Buffer(scannerBuf, 2*1024*1024)
 		for scanner.Scan() {
 			text := scanner.Text()
 			nowStr := time.Now().UTC().Format(time.RFC3339Nano)

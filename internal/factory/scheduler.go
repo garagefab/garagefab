@@ -99,36 +99,57 @@ func (s *Scheduler) Start(ctx context.Context) {
 }
 
 // scheduleNext checks running counts and admits queued jobs FIFO (SCH-1, SCH-3).
+// It prevents queue starvation if an admitted job is still initializing its worktree before
+// its database status transition commits.
 func (s *Scheduler) scheduleNext(ctx context.Context) {
-	// Query currently running jobs from database
+	// 1. Query currently running jobs from database
 	runningCount, err := s.store.CountRunningJobs(ctx)
 	if err != nil {
 		slog.Error("scheduler: count running jobs failed", "error", err)
 		return
 	}
 
-	// Calculate remaining execution capacity
+	// Also count jobs currently in-flight in memory whose DB status has not yet transitioned
+	var activeInMemoryCount int
+	s.runningJobs.Range(func(key, value any) bool {
+		activeInMemoryCount++
+		return true
+	})
+	if activeInMemoryCount > runningCount {
+		runningCount = activeInMemoryCount
+	}
+
+	// 2. Calculate remaining execution capacity (SCH-1)
 	availableSlots := s.maxConcurrent - runningCount
 	if availableSlots <= 0 {
 		return // At maximum concurrency capacity
 	}
 
-	// Admit jobs up to available slots
-	for i := 0; i < availableSlots; i++ {
-		job, err := s.store.GetNextQueuedJob(ctx)
-		if err != nil || job == nil {
-			break // No more queued jobs waiting
+	// 3. Fetch candidate queued jobs in FIFO order (SCH-3)
+	// We query extra candidates (availableSlots + activeInMemoryCount) in case earlier candidates
+	// are already tracked as in-flight in memory.
+	candidates, err := s.store.ListQueuedJobs(ctx, availableSlots+activeInMemoryCount)
+	if err != nil {
+		slog.Error("scheduler: list queued jobs failed", "error", err)
+		return
+	}
+
+	admitted := 0
+	for _, job := range candidates {
+		if admitted >= availableSlots {
+			break
 		}
 
-		// Skip if already tracked as running in-memory
+		// Skip if already tracked as running in-memory (e.g. creating worktree)
 		if _, alreadyRunning := s.runningJobs.Load(job.ID); alreadyRunning {
-			break
+			continue // Do NOT break: continue to admit subsequent queued jobs (SCH-3)!
 		}
 
 		// Create a cancellable context dedicated to this specific job run
 		jobCtx, cancel := context.WithCancel(ctx)
 		s.runningJobs.Store(job.ID, cancel)
 		s.activeWg.Add(1)
+		admitted++
 
 		// Spawn lightweight background goroutine for job execution
 		go func(j *Job, cancelFn context.CancelFunc) {

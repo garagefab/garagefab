@@ -315,6 +315,52 @@ func TestWithTx_AtomicStateAndEvent_PIP2(t *testing.T) {
 	}
 }
 
+// TestWithTx_PanicRollback_Safety tests transaction rollback safety when a panic occurs:
+// It verifies that:
+// 1. The panic is re-thrown.
+// 2. Uncommitted changes within the panicked transaction are rolled back.
+// 3. The single write connection (MaxOpenConns=1) is freed and subsequent transactions succeed.
+func TestWithTx_PanicRollback_Safety(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+
+	p := &store.Project{Name: "p-panic", RepoPath: "/path/to/p-panic"}
+	if err := db.Projects().CreateProject(ctx, p); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic from WithTx closure, but did not panic")
+		}
+
+		// Verify project was NOT updated to 'p-panicking'
+		proj, err := db.Projects().GetProject(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("GetProject failed: %v", err)
+		}
+		if proj.Name != "p-panic" {
+			t.Errorf("expected project name to remain 'p-panic', got %q", proj.Name)
+		}
+
+		// Crucial check: verify write connection is alive and can perform another write transaction!
+		err = db.WithTx(ctx, func(tx *store.Tx) error {
+			proj.Name = "p-recovered"
+			return tx.Projects().UpdateProject(ctx, proj)
+		})
+		if err != nil {
+			t.Fatalf("subsequent write transaction failed after panic: %v", err)
+		}
+	}()
+
+	_ = db.WithTx(ctx, func(tx *store.Tx) error {
+		p.Name = "p-panicking"
+		_ = tx.Projects().UpdateProject(ctx, p)
+		panic("simulated panic inside WithTx")
+	})
+}
+
 // TestStepRun_And_ProcessRecord_RCV1 tests requirements LOG-1 and RCV-1:
 // Creating step runs and recording active OS processes for crash recovery.
 func TestStepRun_And_ProcessRecord_RCV1(t *testing.T) {

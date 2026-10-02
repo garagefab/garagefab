@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/garagefab/garagefab/internal/worker/command"
 )
@@ -121,5 +122,55 @@ func TestSanitizeEnv_SEC6(t *testing.T) {
 	}
 	if !foundCustom {
 		t.Errorf("expected MY_CUSTOM_VAR to be present in sanitized env")
+	}
+}
+
+// TestCommandRunner_LargeOutputLine_LOG2 tests that lines larger than bufio.Scanner's default 64KB
+// are properly captured without token too long errors.
+func TestCommandRunner_LargeOutputLine_LOG2(t *testing.T) {
+	runner := command.NewRunner()
+	tmpDir := t.TempDir()
+
+	// Generate an 80KB line followed by SECOND_LINE
+	res, err := runner.Run(context.Background(), command.RunOptions{
+		WorkDir: tmpDir,
+		Command: `perl -e 'print "A" x 80000 . "\n"; print "SECOND_LINE\n"'`,
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "SECOND_LINE") {
+		t.Errorf("expected SECOND_LINE to be captured after 80KB line, but stdout was truncated")
+	}
+}
+
+// TestCommandRunner_ContextCancel_KillsProcessGroup_RCV1 tests requirements RCV-1 and SEC-6:
+// When context is cancelled, the entire subprocess group is terminated promptly.
+func TestCommandRunner_ContextCancel_KillsProcessGroup_RCV1(t *testing.T) {
+	runner := command.NewRunner()
+	tmpDir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	doneCh := make(chan *command.RunResult, 1)
+	go func() {
+		res, _ := runner.Run(ctx, command.RunOptions{
+			WorkDir: tmpDir,
+			Command: "sleep 10",
+		})
+		doneCh <- res
+	}()
+
+	// Allow process to start, then cancel context
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case res := <-doneCh:
+		if res.ExitCode == 0 {
+			t.Errorf("expected non-zero exit code on cancelled context, got 0")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("command did not terminate promptly after context cancel")
 	}
 }

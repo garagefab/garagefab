@@ -37,6 +37,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"net/url"
@@ -88,6 +89,15 @@ func generateSessionID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// constantTimeEquals securely compares two secret strings in constant time (SEC-3).
+// This mitigates timing side-channel attacks on secret tokens and hashes.
+func constantTimeEquals(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 // authMiddleware enforces Bearer or Session cookie authentication (SEC-3, SEC-5).
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +105,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if token == s.Config.Server.APIToken && token != "" {
+			if constantTimeEquals(token, s.Config.Server.APIToken) {
 				// Inject Bearer AuthInfo into request context
 				ctx := context.WithValue(r.Context(), authContextKey, &AuthInfo{Type: AuthTypeBearer})
 				next.ServeHTTP(w, r.WithContext(ctx))
@@ -110,7 +120,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			if err == nil && session != nil {
 				// Verify session expiration and token hash validity
 				expectedHash := computeTokenHash(s.Config.Server.APIToken)
-				if session.ExpiresAt.After(time.Now()) && session.TokenHash == expectedHash {
+				if session.ExpiresAt.After(time.Now()) && constantTimeEquals(session.TokenHash, expectedHash) {
 					// CSRF protection for cookie auth (SEC-5): verify Origin/Referer on mutating methods
 					if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
 						if !isValidOrigin(r) {
@@ -179,7 +189,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if token != s.Config.Server.APIToken || token == "" {
+	if !constantTimeEquals(token, s.Config.Server.APIToken) {
 		http.Error(w, "Invalid API token", http.StatusUnauthorized)
 		return
 	}

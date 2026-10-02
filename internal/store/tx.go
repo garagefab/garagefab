@@ -81,13 +81,22 @@ type Tx struct {
 }
 
 // WithTx executes the given function in an atomic database transaction (PIP-2).
-// If fn returns an error, the transaction is rolled back; otherwise committed.
+// If fn returns an error or panics, the transaction is rolled back; otherwise committed.
 func (db *DB) WithTx(ctx context.Context, fn func(tx *Tx) error) error {
 	// Begin transaction on the serialized write connection
 	sqlTx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
+
+	// Panic Safety: if fn panics, ensure sqlTx is immediately rolled back
+	// so the serialized write connection (SetMaxOpenConns=1) is never leaked or deadlocked.
+	defer func() {
+		if p := recover(); p != nil {
+			_ = sqlTx.Rollback()
+			panic(p)
+		}
+	}()
 
 	tx := &Tx{
 		tx:   sqlTx,

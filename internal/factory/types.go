@@ -232,6 +232,7 @@ type Store interface {
 	GetJob(ctx context.Context, id int64) (*Job, error)
 	GetProject(ctx context.Context, id int64) (*Project, error)
 	GetNextQueuedJob(ctx context.Context) (*Job, error)
+	ListQueuedJobs(ctx context.Context, limit int) ([]*Job, error)
 	CountRunningJobs(ctx context.Context) (int, error)
 	CountRunningJobsByProject(ctx context.Context, projectID int64) (int, error)
 	CreateStepRun(ctx context.Context, step *StepRun) error

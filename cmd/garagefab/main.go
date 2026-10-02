@@ -179,6 +179,11 @@ var startCmd = &cobra.Command{
 		if err := srv.Shutdown(ctx); err != nil {
 			slog.Error("error during server shutdown", "error", err)
 		}
+
+		// Graceful Worker Drain: cancel scheduler context and await completion of all active
+		// job goroutines BEFORE db.Close() runs via defer.
+		cancelScheduler()
+		scheduler.Close()
 	},
 }
 

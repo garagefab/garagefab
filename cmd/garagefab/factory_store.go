@@ -58,6 +58,19 @@ func (a *factoryStoreAdapter) GetNextQueuedJob(ctx context.Context) (*factory.Jo
 	return toFactoryJob(j), nil
 }
 
+// ListQueuedJobs retrieves queued jobs up to limit (FIFO scheduling, spec SCH-3).
+func (a *factoryStoreAdapter) ListQueuedJobs(ctx context.Context, limit int) ([]*factory.Job, error) {
+	storeJobs, err := a.db.Jobs().ListQueuedJobs(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	var jobs []*factory.Job
+	for _, sj := range storeJobs {
+		jobs = append(jobs, toFactoryJob(sj))
+	}
+	return jobs, nil
+}
+
 // CountRunningJobs returns the total number of currently running jobs across all projects.
 func (a *factoryStoreAdapter) CountRunningJobs(ctx context.Context) (int, error) {
 	return a.db.Jobs().CountRunningJobs(ctx)

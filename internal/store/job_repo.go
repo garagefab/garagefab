@@ -227,6 +227,40 @@ func (r *JobRepo) GetNextQueuedJob(ctx context.Context) (*Job, error) {
 	return scanJob(row)
 }
 
+// ListQueuedJobs retrieves queued jobs in FIFO order up to limit (SCH-3).
+func (r *JobRepo) ListQueuedJobs(ctx context.Context, limit int) ([]*Job, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	query := `
+		SELECT id, project_id, work_type, title, intent, source, source_ref,
+		       stage, status, branch_name, worktree_path, base_sha, head_sha,
+		       pr_url, created_at, updated_at
+		FROM jobs
+		WHERE status = ?
+		ORDER BY id ASC
+		LIMIT ?
+	`
+	rows, err := r.q.QueryContext(ctx, query, StatusQueued, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list queued jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list queued jobs rows: %w", err)
+	}
+	return jobs, nil
+}
+
 // CountRunningJobs returns the total number of jobs currently in running status (SCH-1).
 func (r *JobRepo) CountRunningJobs(ctx context.Context) (int, error) {
 	query := `SELECT COUNT(*) FROM jobs WHERE status = ?`

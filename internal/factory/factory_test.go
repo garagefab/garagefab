@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -88,6 +89,25 @@ func (m *MockStore) GetNextQueuedJob(ctx context.Context) (*factory.Job, error) 
 	}
 	cp := *oldest
 	return &cp, nil
+}
+
+func (m *MockStore) ListQueuedJobs(ctx context.Context, limit int) ([]*factory.Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var queued []*factory.Job
+	for _, j := range m.jobs {
+		if j.Status == factory.StatusQueued {
+			cp := *j
+			queued = append(queued, &cp)
+		}
+	}
+	sort.Slice(queued, func(i, j int) bool {
+		return queued[i].ID < queued[j].ID
+	})
+	if limit > 0 && len(queued) > limit {
+		queued = queued[:limit]
+	}
+	return queued, nil
 }
 
 func (m *MockStore) CountRunningJobs(ctx context.Context) (int, error) {
