@@ -105,6 +105,21 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify work type is enabled for this project (PRJ-4)
+	if len(project.EnabledWorkTypes) > 0 {
+		enabled := false
+		for _, wt := range project.EnabledWorkTypes {
+			if wt == req.WorkType {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
+			http.Error(w, "Work type not enabled for project", http.StatusBadRequest)
+			return
+		}
+	}
+
 	job := &store.Job{
 		ProjectID: req.ProjectID,
 		WorkType:  req.WorkType,

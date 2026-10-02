@@ -170,8 +170,54 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		}
 	}
 
-	// 2. Stage 04_Coding: AI Agent writes code and undergoes automated repair loop (COD-1..7, GRD-1..4)
-	if job.Stage == StageIntent || job.Stage == StageCoding {
+	// 2. Stage 01_Intent -> Transition to 02_Clarification_and_Spec for Feature profile (INT-1, PIP-1)
+	if job.WorkType == WorkTypeFeature && job.Stage == StageIntent {
+		if err := e.wtMgr.WriteArtifact(jobCtx, job.WorktreePath, job.ID, "intent.md", []byte(job.Intent)); err != nil {
+			return fmt.Errorf("factory: write intent.md: %w", err)
+		}
+
+		headSHA, err := e.wtMgr.Checkpoint(jobCtx, job.WorktreePath, job.ID, "01_Intent")
+		if err != nil {
+			return fmt.Errorf("factory: intent checkpoint: %w", err)
+		}
+		job.HeadSHA = headSHA
+
+		err = e.store.InTx(jobCtx, func(tx StoreTx) error {
+			if err := tx.UpdateJobHead(jobCtx, job.ID, headSHA); err != nil {
+				return err
+			}
+			if err := tx.UpdateJobState(jobCtx, job.ID, StageClarificationAndSpec, StatusQueued); err != nil {
+				return err
+			}
+			if err := tx.RecordEvent(jobCtx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageClarificationAndSpec)); err != nil {
+				return err
+			}
+			return tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageClarificationAndSpec, StatusQueued))
+		})
+		if err != nil {
+			return fmt.Errorf("factory: transition to 02_Clarification_and_Spec: %w", err)
+		}
+		job.Stage = StageClarificationAndSpec
+		job.Status = StatusQueued
+	}
+
+	// 3. Stage 02_Clarification_and_Spec (Feature Profile, SPC-1..5)
+	if job.Stage == StageClarificationAndSpec {
+		if job.Status == StatusQueued {
+			if err := e.executeSpecStage(jobCtx, job, project, projCfg); err != nil {
+				return err
+			}
+		}
+		// If job entered needs_clarification or spec_review, yield execution (SPC-2, SPC-5, SPC-7)
+		if job.Status == StatusNeedsClarification || job.Status == StatusSpecReview {
+			e.notifyWake()
+			return nil
+		}
+	}
+
+	// 4. Stage 04_Coding: AI Agent writes code and undergoes automated repair loop (COD-1..7, GRD-1..4)
+	if ((job.WorkType == "" || job.WorkType == WorkTypeRefactor) && (job.Stage == StageIntent || job.Stage == StageCoding)) ||
+		(job.WorkType == WorkTypeFeature && job.Stage == StageCoding) {
 		if err := e.executeCodingStage(jobCtx, job, project, projCfg); err != nil {
 			return err
 		}
@@ -271,6 +317,205 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	return nil
 }
 
+// executeSpecStage executes the AI specification generation step and draft validation (SPC-1..5, LOG-3).
+//
+// Rules enforced:
+// 1. Fresh session with intent and prior clarification.md (SPC-1).
+// 2. Exactly one of clarification-questions.md or spec.md must be produced (SPC-1).
+// 3. Ambiguous intent with questions transitions to 02/needs_clarification (SPC-2).
+// 4. Draft spec.md is strictly validated against §6.1 invariants (SPC-4).
+// 5. Valid draft spec is committed as a checkpoint and transitions to 02/spec_review (SPC-5).
+func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Project, projCfg *ProjectConfig) error {
+	// Transition state to 02_Clarification_and_Spec / running
+	err := e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusRunning); err != nil {
+			return err
+		}
+		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageClarificationAndSpec, StatusRunning))
+	})
+	if err != nil {
+		return fmt.Errorf("factory: transition to spec running: %w", err)
+	}
+	job.Stage = StageClarificationAndSpec
+	job.Status = StatusRunning
+
+	maxAttempts := e.maxRepairAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	var repairFeedback string
+	attempt := 0
+
+	for attempt < maxAttempts {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		currentAttempt := attempt + 1
+		logFilename := "step_spec.log"
+		if currentAttempt > 1 {
+			logFilename = fmt.Sprintf("step_spec_attempt_%d.log", currentAttempt)
+		}
+		logPath := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), logFilename)
+
+		step := &StepRun{
+			JobID:     job.ID,
+			Stage:     StageClarificationAndSpec,
+			Kind:      StepKindAgent,
+			Attempt:   currentAttempt,
+			Executor:  "agent",
+			Status:    StepStatusRunning,
+			LogPath:   logPath,
+			StartedAt: time.Now().UTC(),
+		}
+		if err := e.store.CreateStepRun(ctx, step); err != nil {
+			return fmt.Errorf("factory: create spec step run: %w", err)
+		}
+
+		// Prompt construction (SPC-1): Intent + any clarification.md
+		prompt := fmt.Sprintf("# Intent\n%s", job.Intent)
+		if clarData, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "clarification.md"); err == nil && len(clarData) > 0 {
+			prompt = fmt.Sprintf("%s\n\n# Clarification History\n%s", prompt, string(clarData))
+		}
+		if repairFeedback != "" {
+			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", prompt, repairFeedback)
+		}
+
+		res, err := e.agentRunner.Run(ctx, AgentRequest{
+			JobID:        job.ID,
+			Stage:        StageClarificationAndSpec,
+			WorktreePath: job.WorktreePath,
+			Prompt:       prompt,
+			ProjectName:  project.Name,
+			LogPath:      logPath,
+			OnProcessStart: func(pid, pgid int, startTime int64) {
+				_ = e.store.CreateProcessRecord(ctx, step.ID, pid, pgid, startTime)
+			},
+		})
+
+		now := time.Now().UTC()
+		step.EndedAt = &now
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if err != nil || (res != nil && res.ExitCode != 0) {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureFlawed
+			if res != nil {
+				code := res.ExitCode
+				step.ExitCode = &code
+			}
+			_ = e.store.UpdateStepRun(ctx, step)
+			repairFeedback = fmt.Sprintf("Agent exited with error: %v", err)
+			attempt++
+			continue
+		}
+
+		// Inspect outputs produced under .garagefab/jobs/<id>/ (SPC-1)
+		specBytes, errSpec := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md")
+		hasSpec := errSpec == nil && len(strings.TrimSpace(string(specBytes))) > 0
+
+		qBytes, errQ := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "clarification-questions.md")
+		hasQuestions := errQ == nil && len(strings.TrimSpace(string(qBytes))) > 0
+
+		// Rule SPC-1: Exactly one file produced
+		if hasSpec && hasQuestions {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureFlawed
+			_ = e.store.UpdateStepRun(ctx, step)
+			repairFeedback = "Agent produced both spec.md and clarification-questions.md. Exactly one must be produced."
+			attempt++
+			continue
+		}
+
+		if !hasSpec && !hasQuestions {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureFlawed
+			_ = e.store.UpdateStepRun(ctx, step)
+			repairFeedback = "Agent produced neither spec.md nor clarification-questions.md. Exactly one must be produced."
+			attempt++
+			continue
+		}
+
+		// Case A: clarification-questions.md produced (SPC-2)
+		if hasQuestions {
+			step.Status = StepStatusSuccess
+			code := 0
+			step.ExitCode = &code
+			_ = e.store.UpdateStepRun(ctx, step)
+
+			err = e.store.InTx(ctx, func(tx StoreTx) error {
+				if err := tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusNeedsClarification); err != nil {
+					return err
+				}
+				return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageClarificationAndSpec, StatusNeedsClarification))
+			})
+			if err != nil {
+				return fmt.Errorf("factory: transition to needs_clarification: %w", err)
+			}
+			job.Stage = StageClarificationAndSpec
+			job.Status = StatusNeedsClarification
+			return nil
+		}
+
+		// Case B: spec.md produced -> validate against §6.1 (SPC-4)
+		if errVal := ValidateSpec(string(specBytes), job.WorkType); errVal != nil {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureFlawed
+			_ = e.store.UpdateStepRun(ctx, step)
+			repairFeedback = fmt.Sprintf("Specification validation failed: %v", errVal)
+			attempt++
+			continue
+		}
+
+		// Valid draft spec produced! (SPC-5)
+		step.Status = StepStatusSuccess
+		code := 0
+		step.ExitCode = &code
+		_ = e.store.UpdateStepRun(ctx, step)
+
+		// Create Git checkpoint commit for draft spec
+		headSHA, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "02_Clarification_and_Spec draft spec")
+		if err != nil {
+			return fmt.Errorf("factory: spec checkpoint: %w", err)
+		}
+		job.HeadSHA = headSHA
+
+		err = e.store.InTx(ctx, func(tx StoreTx) error {
+			if err := tx.UpdateJobHead(ctx, job.ID, headSHA); err != nil {
+				return err
+			}
+			if err := tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusSpecReview); err != nil {
+				return err
+			}
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageClarificationAndSpec, StatusSpecReview))
+		})
+		if err != nil {
+			return fmt.Errorf("factory: transition to spec_review: %w", err)
+		}
+		job.Stage = StageClarificationAndSpec
+		job.Status = StatusSpecReview
+		return nil
+	}
+
+	// All repair attempts exhausted -> transition to 02/failed (Manual)
+	err = e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusFailed); err != nil {
+			return err
+		}
+		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"failure_category":%q}`, StageClarificationAndSpec, StatusFailed, FailureManual))
+	})
+	if err != nil {
+		return fmt.Errorf("factory: transition to spec failed: %w", err)
+	}
+	job.Stage = StageClarificationAndSpec
+	job.Status = StatusFailed
+	return fmt.Errorf("factory: spec generation failed after %d attempts: %s", maxAttempts, repairFeedback)
+}
+
 // executeCodingStage orchestrates the AI coding agent and the automated repair loop (COD-1..7, GRD-1..4).
 // It re-runs all verification command groups (build -> test -> lint) upon repair (COD-6).
 func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Project, projCfg *ProjectConfig) error {
@@ -326,8 +571,20 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 		}
 
 		prompt := job.Intent
+		if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
+			prompt = string(specBytes)
+		}
+		// If rejection notes exist, append them to the coding prompt (APR-6)
+		rejections, _ := e.wtMgr.ListArtifacts(ctx, job.WorktreePath, job.ID)
+		for _, rej := range rejections {
+			if strings.HasPrefix(rej, "rejections/") {
+				if rData, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, rej); err == nil {
+					prompt = fmt.Sprintf("%s\n\n[Rejection Note from Gate]\n%s", prompt, string(rData))
+				}
+			}
+		}
 		if repairFeedback != "" {
-			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", job.Intent, repairFeedback)
+			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", prompt, repairFeedback)
 		}
 
 		res, err := e.agentRunner.Run(ctx, AgentRequest{

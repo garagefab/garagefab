@@ -278,3 +278,70 @@ func (m *Manager) HeadSHA(ctx context.Context, worktreePath string) (string, err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// JobArtifactDir returns the absolute path to a job's artifact directory (.garagefab/jobs/<jobID>)
+// inside the given worktree directory (LOG-3, spec §6.7).
+func JobArtifactDir(worktreePath string, jobID int64) string {
+	return filepath.Join(worktreePath, ".garagefab", "jobs", fmt.Sprintf("%d", jobID))
+}
+
+// WriteArtifact writes an artifact file inside the job's dedicated artifact directory (LOG-3).
+// If parent directories do not exist, they are created automatically.
+func (m *Manager) WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error {
+	dir := JobArtifactDir(worktreePath, jobID)
+	fullPath := filepath.Join(dir, filename)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return fmt.Errorf("worktree: create artifact dir: %w", err)
+	}
+	if err := os.WriteFile(fullPath, content, 0644); err != nil {
+		return fmt.Errorf("worktree: write artifact %s: %w", filename, err)
+	}
+	return nil
+}
+
+// ReadArtifact reads the specified artifact file from the job's artifact directory (LOG-3).
+func (m *Manager) ReadArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) ([]byte, error) {
+	dir := JobArtifactDir(worktreePath, jobID)
+	fullPath := filepath.Join(dir, filename)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("worktree: read artifact %s: %w", filename, err)
+	}
+	return data, nil
+}
+
+// RemoveArtifact deletes the specified artifact file from the job's artifact directory (LOG-3).
+// If the file does not exist, no error is returned (idempotent).
+func (m *Manager) RemoveArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) error {
+	dir := JobArtifactDir(worktreePath, jobID)
+	fullPath := filepath.Join(dir, filename)
+	if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("worktree: remove artifact %s: %w", filename, err)
+	}
+	return nil
+}
+
+// ListArtifacts returns all relative file paths residing under the job's artifact directory (LOG-3).
+func (m *Manager) ListArtifacts(ctx context.Context, worktreePath string, jobID int64) ([]string, error) {
+	dir := JobArtifactDir(worktreePath, jobID)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil, nil
+	}
+	var list []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			rel, rErr := filepath.Rel(dir, path)
+			if rErr == nil {
+				list = append(list, rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("worktree: list artifacts: %w", err)
+	}
+	return list, nil
+}

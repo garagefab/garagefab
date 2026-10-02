@@ -192,3 +192,70 @@ func TestWorktree_Serialization_WKT9(t *testing.T) {
 		t.Fatalf("WKT-9 serialization failed with concurrent worktrees: %v", err)
 	}
 }
+
+// TestWorktree_Artifacts_LOG3 verifies requirement LOG-3:
+// Artifact files (.garagefab/jobs/<id>/<file>) can be written, read, listed, and removed.
+func TestWorktree_Artifacts_LOG3(t *testing.T) {
+	ctx := context.Background()
+	repoDir := createTestGitRepo(t)
+	baseDir := filepath.Join(t.TempDir(), "worktrees")
+	mgr := worktree.NewManager(baseDir)
+
+	jobID := int64(999)
+	info, err := mgr.Create(ctx, repoDir, "test-proj", jobID, "main")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	defer func() {
+		_ = mgr.Remove(ctx, repoDir, info.Path, info.Branch, true)
+	}()
+
+	// 1. Write artifacts
+	intentContent := []byte("# Intent\nImplement feature X")
+	if err := mgr.WriteArtifact(ctx, info.Path, jobID, "intent.md", intentContent); err != nil {
+		t.Fatalf("WriteArtifact intent.md: %v", err)
+	}
+
+	specContent := []byte("# Spec\nDetails of feature X")
+	if err := mgr.WriteArtifact(ctx, info.Path, jobID, "spec.md", specContent); err != nil {
+		t.Fatalf("WriteArtifact spec.md: %v", err)
+	}
+
+	// 2. Read artifacts
+	readIntent, err := mgr.ReadArtifact(ctx, info.Path, jobID, "intent.md")
+	if err != nil {
+		t.Fatalf("ReadArtifact intent.md: %v", err)
+	}
+	if string(readIntent) != string(intentContent) {
+		t.Errorf("readIntent mismatch: got %q, want %q", string(readIntent), string(intentContent))
+	}
+
+	// 3. List artifacts
+	artifacts, err := mgr.ListArtifacts(ctx, info.Path, jobID)
+	if err != nil {
+		t.Fatalf("ListArtifacts: %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Errorf("expected 2 artifacts, got %d: %v", len(artifacts), artifacts)
+	}
+
+	// 4. Remove artifact
+	if err := mgr.RemoveArtifact(ctx, info.Path, jobID, "intent.md"); err != nil {
+		t.Fatalf("RemoveArtifact: %v", err)
+	}
+
+	// 5. Verify removed
+	_, err = mgr.ReadArtifact(ctx, info.Path, jobID, "intent.md")
+	if err == nil {
+		t.Fatalf("expected error reading removed artifact, got nil")
+	}
+
+	// List should now only have 1
+	artifactsAfter, err := mgr.ListArtifacts(ctx, info.Path, jobID)
+	if err != nil {
+		t.Fatalf("ListArtifacts: %v", err)
+	}
+	if len(artifactsAfter) != 1 || artifactsAfter[0] != "spec.md" {
+		t.Errorf("expected [spec.md], got %v", artifactsAfter)
+	}
+}

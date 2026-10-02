@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -231,10 +232,12 @@ func (tx *mockTx) RecordApproval(ctx context.Context, a *factory.Approval) error
 
 // MockWorktreeManager provides an in-memory double of factory.WorktreeManager.
 type MockWorktreeManager struct {
-	createdWorktrees map[int64]string
-	checkpoints      map[int64]string
-	removedWorktrees map[int64]bool
-	resetCount       int
+	createdWorktrees  map[int64]string
+	checkpoints       map[int64]string
+	checkpointHistory []string
+	removedWorktrees  map[int64]bool
+	resetCount        int
+	artifacts         map[string][]byte
 }
 
 func newMockWorktreeManager() *MockWorktreeManager {
@@ -242,6 +245,7 @@ func newMockWorktreeManager() *MockWorktreeManager {
 		createdWorktrees: make(map[int64]string),
 		checkpoints:      make(map[int64]string),
 		removedWorktrees: make(map[int64]bool),
+		artifacts:        make(map[string][]byte),
 	}
 }
 
@@ -258,6 +262,7 @@ func (m *MockWorktreeManager) Create(ctx context.Context, repoPath, projectName 
 func (m *MockWorktreeManager) Checkpoint(ctx context.Context, worktreePath string, jobID int64, message string) (string, error) {
 	sha := fmt.Sprintf("sha-%s-%d", message, jobID)
 	m.checkpoints[jobID] = sha
+	m.checkpointHistory = append(m.checkpointHistory, message)
 	return sha, nil
 }
 
@@ -276,6 +281,49 @@ func (m *MockWorktreeManager) Diff(ctx context.Context, worktreePath, baseSHA st
 
 func (m *MockWorktreeManager) HeadSHA(ctx context.Context, worktreePath string) (string, error) {
 	return "head123", nil
+}
+
+func (m *MockWorktreeManager) WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error {
+	if m.artifacts == nil {
+		m.artifacts = make(map[string][]byte)
+	}
+	key := fmt.Sprintf("%d/%s", jobID, filename)
+	m.artifacts[key] = content
+	return nil
+}
+
+func (m *MockWorktreeManager) ReadArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) ([]byte, error) {
+	if m.artifacts == nil {
+		return nil, fmt.Errorf("artifact not found: %s", filename)
+	}
+	key := fmt.Sprintf("%d/%s", jobID, filename)
+	content, ok := m.artifacts[key]
+	if !ok {
+		return nil, fmt.Errorf("artifact not found: %s", filename)
+	}
+	return content, nil
+}
+
+func (m *MockWorktreeManager) RemoveArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) error {
+	if m.artifacts != nil {
+		key := fmt.Sprintf("%d/%s", jobID, filename)
+		delete(m.artifacts, key)
+	}
+	return nil
+}
+
+func (m *MockWorktreeManager) ListArtifacts(ctx context.Context, worktreePath string, jobID int64) ([]string, error) {
+	if m.artifacts == nil {
+		return nil, nil
+	}
+	prefix := fmt.Sprintf("%d/", jobID)
+	var list []string
+	for k := range m.artifacts {
+		if strings.HasPrefix(k, prefix) {
+			list = append(list, strings.TrimPrefix(k, prefix))
+		}
+	}
+	return list, nil
 }
 
 // MockAgentRunner provides an in-memory double of factory.AgentRunner.

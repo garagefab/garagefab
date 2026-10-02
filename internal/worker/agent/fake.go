@@ -36,17 +36,21 @@ import (
 // FakeRunner simulates agent executions for unit tests and the M1 walking skeleton (COD-1/2/9, REV).
 // It can be configured to succeed, fail, delay, or return specific review decisions.
 type FakeRunner struct {
-	FailCoding     bool          // If true, simulates a coding failure (exit code 1)
-	FailReview     bool          // If true, produces a "request_changes" review decision
-	ReviewDecision string        // Overrides default review decision ("approve" vs "request_changes")
-	CustomExitCode int           // Simulates arbitrary non-zero process exit codes
-	SleepDuration  time.Duration // Simulates long-running agent work for concurrency testing
+	FailCoding             bool          // If true, simulates a coding failure (exit code 1)
+	FailReview             bool          // If true, produces a "request_changes" review decision
+	ReviewDecision         string        // Overrides default review decision ("approve" vs "request_changes")
+	SpecBehavior           string        // "spec" (default), "questions", "both", "neither", "invalid" (SPC-1, SPC-2)
+	CustomSpecContent      string        // Overrides default valid spec content
+	CustomQuestionsContent string        // Overrides default clarification questions content
+	CustomExitCode         int           // Simulates arbitrary non-zero process exit codes
+	SleepDuration          time.Duration // Simulates long-running agent work for concurrency testing
 }
 
-// NewFakeRunner returns a FakeRunner configured for the happy path (approves reviews).
+// NewFakeRunner returns a FakeRunner configured for the happy path (approves reviews, valid spec).
 func NewFakeRunner() *FakeRunner {
 	return &FakeRunner{
 		ReviewDecision: "approve",
+		SpecBehavior:   "spec",
 	}
 }
 
@@ -84,6 +88,76 @@ func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, e
 
 	// Stage-dependent simulation
 	switch req.Stage {
+	case "02_Clarification_and_Spec":
+		artifactDir := filepath.Join(req.WorktreePath, ".garagefab", "jobs", fmt.Sprintf("%d", req.JobID))
+		_ = os.MkdirAll(artifactDir, 0700)
+
+		behavior := f.SpecBehavior
+		if behavior == "" {
+			behavior = "spec"
+		}
+
+		switch behavior {
+		case "questions":
+			qContent := f.CustomQuestionsContent
+			if qContent == "" {
+				qContent = "Q1. Should we support SQLite or PostgreSQL?\n\nQ2. What is the required session timeout duration?\n"
+			}
+			_ = os.WriteFile(filepath.Join(artifactDir, "clarification-questions.md"), []byte(qContent), 0644)
+			return &AgentResult{ExitCode: 0, Summary: "Fake agent output clarification questions"}, nil
+
+		case "invalid":
+			// Output invalid spec missing Acceptance Criteria
+			invalidSpec := fmt.Sprintf("# %s\n\n## Summary\nInvalid spec.\n\n## Goals and Non-Goals\nNone.\n\n## Design\nNone.\n\n## Implementation Plan\n1. Do something.\n\n## Test Plan\nNone.\n\n## Risks and Assumptions\nNone.\n", req.ProjectName)
+			_ = os.WriteFile(filepath.Join(artifactDir, "spec.md"), []byte(invalidSpec), 0644)
+			return &AgentResult{ExitCode: 0, Summary: "Fake agent output invalid spec"}, nil
+
+		case "both":
+			// Write both files (violates SPC-1)
+			_ = os.WriteFile(filepath.Join(artifactDir, "clarification-questions.md"), []byte("Q1. Ambiguous question?\n"), 0644)
+			validSpec := fmt.Sprintf("# Feature Spec\n\n## Summary\nSummary.\n\n## Goals and Non-Goals\nGoals.\n\n## Design\nDesign.\n\n## Acceptance Criteria\nGiven A When B Then AC-1: Pass.\n\n## Implementation Plan\n1. Work (AC-1)\n\n## Test Plan\nTests.\n\n## Risks and Assumptions\nNone.\n")
+			_ = os.WriteFile(filepath.Join(artifactDir, "spec.md"), []byte(validSpec), 0644)
+			return &AgentResult{ExitCode: 0, Summary: "Fake agent output both files"}, nil
+
+		case "neither":
+			// Output nothing
+			return &AgentResult{ExitCode: 0, Summary: "Fake agent output nothing"}, nil
+
+		default: // "spec"
+			specContent := f.CustomSpecContent
+			if specContent == "" {
+				specContent = fmt.Sprintf(`# Feature Spec for %s
+
+## Summary
+Complete specification for %s feature.
+
+## Goals and Non-Goals
+Goals:
+- Implement required functionality
+Non-Goals:
+- Out-of-scope refactoring
+
+## Design
+Modular hexagonal design isolating factory from worker and server.
+
+## Acceptance Criteria
+Given valid input When processed Then AC-1: returns expected output.
+
+## Implementation Plan
+1. Create core domain logic (AC-1)
+2. Add end-to-end integration tests (AC-1)
+
+## Test Plan
+Automated unit tests and CI integration verification.
+
+## Risks and Assumptions
+Assumes standard execution environment.
+`, req.ProjectName, req.ProjectName)
+			}
+			_ = os.WriteFile(filepath.Join(artifactDir, "spec.md"), []byte(specContent), 0644)
+			return &AgentResult{ExitCode: 0, Summary: "Fake agent output valid spec"}, nil
+		}
+
 	case "04_Coding":
 		if f.FailCoding {
 			return &AgentResult{
