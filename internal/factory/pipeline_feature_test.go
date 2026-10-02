@@ -15,6 +15,7 @@ package factory_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -248,5 +249,93 @@ Risks
 	job := store.jobs[4]
 	if job.Status != factory.StatusSpecReview {
 		t.Errorf("expected job at spec_review after repair, got %s", job.Status)
+	}
+}
+
+// TestEngine_SubmitClarification_SPC3 verifies requirement SPC-3:
+// When clarification answers are submitted, clarification.md is created, questions removed,
+// a checkpoint commit recorded, and job status returns to queued.
+func TestEngine_SubmitClarification_SPC3(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	store.projects[1] = &factory.Project{ID: 1, Name: "alpha", RepoPath: "/repos/alpha", BaseRef: "main"}
+
+	store.jobs[5] = &factory.Job{
+		ID:           5,
+		ProjectID:    1,
+		WorkType:     factory.WorkTypeFeature,
+		Title:        "Clarification Job",
+		Intent:       "Build feature",
+		Stage:        factory.StageClarificationAndSpec,
+		Status:       factory.StatusNeedsClarification,
+		WorktreePath: "/tmp/worktrees/alpha/5",
+	}
+
+	wtMgr := newMockWorktreeManager()
+	questions := "Q1. Should we support PostgreSQL?\n\nQ2. What is the session duration?\n"
+	_ = wtMgr.WriteArtifact(ctx, "/tmp/worktrees/alpha/5", 5, "clarification-questions.md", []byte(questions))
+
+	var wakeNotified bool
+	engine := factory.NewEngine(store, wtMgr, &ScriptableAgentRunner{}, &ScriptableCommandRunner{}, t.TempDir())
+	engine.SetWakeFunc(func() {
+		wakeNotified = true
+	})
+
+	answers := []factory.ClarificationAnswer{
+		{Q: 1, Answer: "Yes, use PostgreSQL with jsonb."},
+		{Q: 2, Answer: "30 minutes timeout."},
+	}
+
+	err := engine.SubmitClarification(ctx, 5, answers)
+	if err != nil {
+		t.Fatalf("SubmitClarification failed: %v", err)
+	}
+
+	// 1. Verify clarification.md was written
+	clarData, err := wtMgr.ReadArtifact(ctx, "/tmp/worktrees/alpha/5", 5, "clarification.md")
+	if err != nil {
+		t.Fatalf("expected clarification.md artifact, got error: %v", err)
+	}
+	clarContent := string(clarData)
+	if !strings.Contains(clarContent, "## Q1") || !strings.Contains(clarContent, "Yes, use PostgreSQL") {
+		t.Errorf("clarification.md missing Q1 block, got:\n%s", clarContent)
+	}
+	if !strings.Contains(clarContent, "## Q2") || !strings.Contains(clarContent, "30 minutes timeout") {
+		t.Errorf("clarification.md missing Q2 block, got:\n%s", clarContent)
+	}
+
+	// 2. Verify clarification-questions.md was removed (SPC-1: present only while pending)
+	_, err = wtMgr.ReadArtifact(ctx, "/tmp/worktrees/alpha/5", 5, "clarification-questions.md")
+	if err == nil {
+		t.Errorf("expected clarification-questions.md to be removed, but was found")
+	}
+
+	// 3. Verify checkpoint commit was recorded
+	foundCheckpoint := false
+	for _, msg := range wtMgr.checkpointHistory {
+		if strings.Contains(msg, "clarification answers") {
+			foundCheckpoint = true
+			break
+		}
+	}
+	if !foundCheckpoint {
+		t.Errorf("expected checkpoint commit for clarification answers")
+	}
+
+	// 4. Verify job transitioned back to queued
+	job := store.jobs[5]
+	if job.Status != factory.StatusQueued {
+		t.Errorf("expected job status = queued, got %s", job.Status)
+	}
+
+	// 5. Verify scheduler wake was triggered
+	if !wakeNotified {
+		t.Errorf("expected scheduler wake notification after clarification submission")
+	}
+
+	// 6. Submitting again on queued job should fail with ErrInvalidState
+	err = engine.SubmitClarification(ctx, 5, answers)
+	if !errors.Is(err, factory.ErrInvalidState) {
+		t.Errorf("expected ErrInvalidState when job is queued, got: %v", err)
 	}
 }

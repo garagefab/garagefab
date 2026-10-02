@@ -37,15 +37,19 @@ import (
 	"time"
 
 	"github.com/garagefab/garagefab/internal/config"
+	"github.com/garagefab/garagefab/internal/factory"
 	"github.com/garagefab/garagefab/internal/server"
 	"github.com/garagefab/garagefab/internal/store"
 )
 
 type mockEngine struct {
-	approvedID   int64
-	approvedSHA  string
-	rejectedID   int64
-	rejectedNote string
+	approvedID           int64
+	approvedSHA          string
+	rejectedID           int64
+	rejectedNote         string
+	clarificationID      int64
+	clarificationAnswers []factory.ClarificationAnswer
+	clarificationErr     error
 }
 
 func (m *mockEngine) Approve(ctx context.Context, jobID int64, headSHA string) error {
@@ -66,6 +70,12 @@ func (m *mockEngine) Cancel(ctx context.Context, jobID int64) error {
 
 func (m *mockEngine) Retry(ctx context.Context, jobID int64) error {
 	return nil
+}
+
+func (m *mockEngine) SubmitClarification(ctx context.Context, jobID int64, answers []factory.ClarificationAnswer) error {
+	m.clarificationID = jobID
+	m.clarificationAnswers = answers
+	return m.clarificationErr
 }
 
 type mockScheduler struct {
@@ -453,6 +463,75 @@ func TestSSE_Events_LOG4(t *testing.T) {
 	}
 	if !strings.Contains(respBody, "data: {\"status\":\"running\"}") {
 		t.Errorf("LOG-4 violated: expected SSE stream to contain payload, got:\n%s", respBody)
+	}
+}
+
+// TestClarificationAPI_SPC3 verifies requirement SPC-3:
+// Answers submitted via POST /api/jobs/{id}/clarification are validated and passed to the engine.
+func TestClarificationAPI_SPC3(t *testing.T) {
+	srv, _, engine, scheduler := setupTestServer(t)
+
+	postClarification := func(token string, jobID int64, body any) *httptest.ResponseRecorder {
+		var buf bytes.Buffer
+		if body != nil {
+			_ = json.NewEncoder(&buf).Encode(body)
+		}
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/jobs/%d/clarification", jobID), &buf)
+		req.Host = "127.0.0.1:7878"
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		srv.Router.ServeHTTP(w, req)
+		return w
+	}
+
+	// 1. Unauthenticated request -> 401 Unauthorized
+	w := postClarification("", 10, map[string]any{"answers": []map[string]any{{"q": 1, "answer": "Yes"}}})
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized without auth, got %d", w.Code)
+	}
+
+	// 2. Empty answers -> 422 Unprocessable Entity
+	w = postClarification("test-secret-token", 10, map[string]any{"answers": []map[string]any{}})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 for empty answers array, got %d", w.Code)
+	}
+
+	// 3. Invalid answer (empty text) -> 422 Unprocessable Entity
+	w = postClarification("test-secret-token", 10, map[string]any{"answers": []map[string]any{{"q": 1, "answer": "   "}}})
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 for blank answer text, got %d", w.Code)
+	}
+
+	// 4. Invalid state from engine -> 409 Conflict
+	engine.clarificationErr = factory.ErrInvalidState
+	w = postClarification("test-secret-token", 10, map[string]any{
+		"answers": []map[string]any{{"q": 1, "answer": "Use SQLite"}},
+	})
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 Conflict when job not awaiting clarification, got %d", w.Code)
+	}
+
+	// 5. Successful submission via Bearer Token (SPC-3)
+	engine.clarificationErr = nil
+	w = postClarification("test-secret-token", 10, map[string]any{
+		"answers": []map[string]any{
+			{"q": 1, "answer": "Use SQLite"},
+			{"q": 2, "answer": "Timeout is 30s"},
+		},
+	})
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for valid answers, got %d", w.Code)
+	}
+	if engine.clarificationID != 10 {
+		t.Errorf("expected engine.clarificationID = 10, got %d", engine.clarificationID)
+	}
+	if len(engine.clarificationAnswers) != 2 {
+		t.Errorf("expected 2 answers passed to engine, got %d", len(engine.clarificationAnswers))
+	}
+	if scheduler.wakeCount == 0 {
+		t.Errorf("expected scheduler.Wake to be invoked after clarification submission")
 	}
 }
 

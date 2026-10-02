@@ -44,6 +44,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/garagefab/garagefab/internal/config"
+	"github.com/garagefab/garagefab/internal/factory"
 	"github.com/garagefab/garagefab/internal/store"
 )
 
@@ -56,6 +57,7 @@ type JobEngine interface {
 	Reject(ctx context.Context, jobID int64, note string) error
 	Cancel(ctx context.Context, jobID int64) error
 	Retry(ctx context.Context, jobID int64) error
+	SubmitClarification(ctx context.Context, jobID int64, answers []factory.ClarificationAnswer) error
 }
 
 // JobScheduler defines scheduling actions required by the HTTP server.
@@ -114,6 +116,7 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 			protected.Get("/jobs/{id}", s.handleGetJob)
 			protected.Post("/jobs/{id}/cancel", s.handleCancelJob)
 			protected.Post("/jobs/{id}/retry", s.handleRetryJob)
+			protected.Post("/jobs/{id}/clarification", s.handleClarification)
 
 			// SSE Live Events Stream (LOG-4)
 			protected.Get("/events", s.handleEventsSSE)
