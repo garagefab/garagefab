@@ -1,30 +1,61 @@
+// Package agent defines interfaces and data transfer models for AI coding agent runners.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & PATTERNS:
+// Worker Abstraction Layer — Strategy Pattern.
+//
+// In Garagefab, AI coding agents (such as Google Antigravity `agy`, OpenCode, or
+// test doubles like `FakeRunner`) are treated as swappable execution strategies.
+// The factory orchestrator dispatches work via the `Runner` interface without knowing
+// which specific agent implementation is active.
+//
+// GO CONCEPTS & JAVA COMPARISONS:
+//
+//  1. Function Types as Callbacks (`ProcessStartFunc`):
+//     In Java, you would define an interface like `@FunctionalInterface public interface
+//     ProcessStartListener { void onStart(int pid, int pgid, long startTime); }`.
+//     In Go, functions are first-class citizens. You declare a function type directly:
+//     `type ProcessStartFunc func(pid, pgid int, startTime int64)`.
+//
+//  2. Struct-Based Parameter Objects:
+//     Instead of long method parameter lists, Go programs bundle parameters into request
+//     and result structs (`AgentRequest`, `AgentResult`). This enables clean evolution
+//     of parameters without breaking API signatures.
+//
+// ==============================================================================
 package agent
 
 import "context"
 
-// ProcessStartFunc is called right after process startup to persist process records (RCV-1).
+// ProcessStartFunc is a callback invoked immediately after an agent subprocess starts.
+// It reports the OS Process ID (PID) and Process Group ID (PGID) to the caller so
+// they can be persisted to the database for crash recovery (RCV-1).
 type ProcessStartFunc func(pid, pgid int, startTime int64)
 
-// AgentRequest specifies parameters for executing an agent step.
+// AgentRequest encapsulates all inputs needed to execute a single pipeline stage with an AI agent.
 type AgentRequest struct {
-	JobID          int64
-	Stage          string
-	WorktreePath   string
-	Prompt         string
-	ProjectName    string
-	Env            map[string]string
-	LogPath        string
-	OnProcessStart ProcessStartFunc
+	JobID          int64             // ID of the job being processed
+	Stage          string            // Current SDLC pipeline stage (e.g. "04_Coding", "05_Independent_Review")
+	WorktreePath   string            // Absolute path to the isolated git worktree where the agent will work
+	Prompt         string            // The instruction or task specification for the agent
+	ProjectName    string            // Name of the project repository
+	Env            map[string]string // Environment variables passed to the agent process
+	LogPath        string            // Destination file path for streaming process logs
+	OnProcessStart ProcessStartFunc  // Optional callback fired once the OS process has launched
 }
 
-// AgentResult represents the outcome of an agent invocation.
+// AgentResult represents the outcome and produced artifacts of an agent run.
 type AgentResult struct {
-	ExitCode     int
-	ArtifactPath string
-	Summary      string
+	ExitCode     int    // OS process exit code (0 indicates success)
+	ArtifactPath string // Path to structured JSON artifact produced by the agent (e.g. review.json)
+	Summary      string // Human-readable summary of actions taken by the agent
 }
 
-// Runner is the interface for executing AI coding agents.
+// Runner is the common interface implemented by all AI coding agent adapters.
+//
+// Go Concept: Implicit Interfaces.
+// Any struct providing a `Run(context.Context, AgentRequest) (*AgentResult, error)`
+// method automatically satisfies this interface without needing an `implements` declaration.
 type Runner interface {
 	Run(ctx context.Context, req AgentRequest) (*AgentResult, error)
 }

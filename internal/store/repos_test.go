@@ -1,3 +1,21 @@
+// Package store_test contains integration tests for all store repositories.
+//
+// ==============================================================================
+// GO TESTING CONCEPTS:
+//
+//  1. `t.Cleanup()`:
+//     Go 1.14 introduced `t.Cleanup(fn)`.
+//     Instead of writing `defer db.Close()` in every test, a setup helper function
+//     (`setupTestDB`) registers the cleanup callback directly with the test runner.
+//     Equivalent to JUnit 5's `@AfterEach`.
+//
+//  2. Testing Database Foreign Keys & Cascades:
+//     SQLite disables foreign key enforcement by default. These tests verify that
+//     `PRAGMA foreign_keys=ON` is working as expected:
+//     - Deleting a parent `Project` with associated jobs is RESTRICTED (fails).
+//     - Deleting a `Job` CASCADE-deletes child `StepRuns`.
+//
+// ==============================================================================
 package store_test
 
 import (
@@ -10,6 +28,7 @@ import (
 	"github.com/garagefab/garagefab/internal/store"
 )
 
+// setupTestDB creates an isolated SQLite database in a temporary directory and registers cleanup.
 func setupTestDB(t *testing.T) *store.DB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
@@ -17,12 +36,15 @@ func setupTestDB(t *testing.T) *store.DB {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
+	// Automatically close database when calling test completes
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
 	return db
 }
 
+// TestProjectRepo_CRUD_And_UniqueConstraints_PRJ5 verifies requirement PRJ-5:
+// Project CRUD operations and unique constraint enforcement for name and repo_path.
 func TestProjectRepo_CRUD_And_UniqueConstraints_PRJ5(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)
@@ -105,6 +127,8 @@ func TestProjectRepo_CRUD_And_UniqueConstraints_PRJ5(t *testing.T) {
 	}
 }
 
+// TestJobRepo_CRUD_And_FIFO_SCH3 tests requirements SCH-1, SCH-2, SCH-3:
+// FIFO queue ordering and active/attention job counts.
 func TestJobRepo_CRUD_And_FIFO_SCH3(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)
@@ -140,7 +164,7 @@ func TestJobRepo_CRUD_And_FIFO_SCH3(t *testing.T) {
 		t.Fatalf("CreateJob j2 failed: %v", err)
 	}
 
-	// Verify FIFO order (SCH-3): oldest queued job should be j1
+	// Verify FIFO order (SCH-3): oldest queued job must be j1
 	nextJob, err := jobRepo.GetNextQueuedJob(ctx)
 	if err != nil {
 		t.Fatalf("GetNextQueuedJob failed: %v", err)
@@ -203,6 +227,8 @@ func TestJobRepo_CRUD_And_FIFO_SCH3(t *testing.T) {
 	}
 }
 
+// TestWithTx_AtomicStateAndEvent_PIP2 verifies requirement PIP-2:
+// State updates and audit event writes are committed atomically; on error, both roll back.
 func TestWithTx_AtomicStateAndEvent_PIP2(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)
@@ -289,6 +315,8 @@ func TestWithTx_AtomicStateAndEvent_PIP2(t *testing.T) {
 	}
 }
 
+// TestStepRun_And_ProcessRecord_RCV1 tests requirements LOG-1 and RCV-1:
+// Creating step runs and recording active OS processes for crash recovery.
 func TestStepRun_And_ProcessRecord_RCV1(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)
@@ -354,6 +382,8 @@ func TestStepRun_And_ProcessRecord_RCV1(t *testing.T) {
 	}
 }
 
+// TestEventRepo_SinceAndRecent_LOG4 tests requirement LOG-4:
+// Event retrieval by cursor and for dashboard recent feed.
 func TestEventRepo_SinceAndRecent_LOG4(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)
@@ -404,6 +434,8 @@ func TestEventRepo_SinceAndRecent_LOG4(t *testing.T) {
 	}
 }
 
+// TestApprovalRepo_APR5 tests requirement APR-5:
+// Gate approval records and latest decision retrieval.
 func TestApprovalRepo_APR5(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)
@@ -437,6 +469,8 @@ func TestApprovalRepo_APR5(t *testing.T) {
 	}
 }
 
+// TestSessionRepo_Invalidation_SEC3 tests requirement SEC-3:
+// Dashboard session expiration and bulk invalidation on token rotation.
 func TestSessionRepo_Invalidation_SEC3(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)
@@ -450,7 +484,7 @@ func TestSessionRepo_Invalidation_SEC3(t *testing.T) {
 	s2 := &store.Session{
 		ID:        "sess-2",
 		TokenHash: "hash-1",
-		ExpiresAt: time.Now().Add(-1 * time.Minute), // expired
+		ExpiresAt: time.Now().Add(-1 * time.Minute), // already expired
 	}
 
 	if err := sessRepo.CreateSession(ctx, s1); err != nil {
@@ -480,6 +514,7 @@ func TestSessionRepo_Invalidation_SEC3(t *testing.T) {
 	}
 }
 
+// TestForeignKeys_CascadeAndRestrict verifies that SQLite foreign key enforcement is active.
 func TestForeignKeys_CascadeAndRestrict(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestDB(t)
@@ -503,13 +538,13 @@ func TestForeignKeys_CascadeAndRestrict(t *testing.T) {
 		t.Fatalf("CreateStepRun failed: %v", err)
 	}
 
-	// Deleting project with attached jobs must be restricted by foreign key
+	// Deleting a project that has active jobs must be RESTRICTED by foreign key constraint
 	_, err := db.ExecContext(ctx, "DELETE FROM projects WHERE id = ?", p.ID)
 	if err == nil {
 		t.Fatal("expected foreign key RESTRICT error when deleting project with jobs, got nil")
 	}
 
-	// Deleting job must cascade and delete step run
+	// Deleting a job must CASCADE and delete its child step run
 	_, err = db.ExecContext(ctx, "DELETE FROM jobs WHERE id = ?", j.ID)
 	if err != nil {
 		t.Fatalf("delete job failed: %v", err)

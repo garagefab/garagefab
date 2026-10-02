@@ -1,3 +1,36 @@
+// Package config manages configuration loading, validation, default provisioning,
+// and single-instance process file locking for Garagefab.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & PATTERNS:
+// Infrastructure Configuration & Security Guardrails.
+//
+// This package is responsible for:
+// 1. Determining the application data directory (`~/.garagefab` by default).
+// 2. Ensuring strict OS-level permissions (0700 for directories, 0600 for secrets).
+// 3. Auto-generating a secure 256-bit API token on initial run (CLI-6).
+// 4. Validating network listen addresses to guarantee loopback-only binding (SEC-1).
+//
+// GO CONCEPTS & JAVA / SPRING COMPARISONS:
+//
+//  1. Struct Tags (`yaml:"..."`):
+//     In Java/Spring Boot, annotations like `@JsonProperty("server_port")` or `@Value`
+//     are used for JSON/YAML binding.
+//     In Go, backtick annotations like `yaml:"listen"` are "Struct Tags". The `yaml.v3`
+//     library inspects them via runtime reflection (`reflect` package).
+//     `yaml:"-"` is equivalent to Java's `transient` or `@JsonIgnore` — it excludes
+//     the field from serialization.
+//
+//  2. Strongly-Typed Durations (`time.Duration`):
+//     In Java, durations in config are often strings or long milliseconds.
+//     Go's `time.Duration` is an `int64` representing nanoseconds. The YAML unmarshaler
+//     automatically parses human-readable strings like "30s", "10m", or "2h".
+//
+//  3. Structured Logging (`log/slog`):
+//     Standard library structured logger introduced in Go 1.21 (replaces older packages
+//     like Logrus or Zap, equivalent to SLF4J with structured MDC/key-values in Java).
+//
+// ==============================================================================
 package config
 
 import (
@@ -13,30 +46,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// StepTimeouts defines execution timeouts for agents and commands.
+// StepTimeouts defines execution timeouts for agents and background commands.
 type StepTimeouts struct {
-	Agent   time.Duration `yaml:"agent"`
-	Command time.Duration `yaml:"command"`
+	Agent   time.Duration `yaml:"agent"`   // Maximum time an AI agent CLI process may run before timeout
+	Command time.Duration `yaml:"command"` // Maximum time a verification command (e.g. tests) may run
 }
 
 // EngineConfig holds factory and runner configuration defaults.
 type EngineConfig struct {
-	MaxConcurrentJobs int           `yaml:"max_concurrent_jobs"`
-	MaxRepairAttempts int           `yaml:"max_repair_attempts"`
-	PollInterval      time.Duration `yaml:"poll_interval"`
-	StepTimeouts      StepTimeouts  `yaml:"step_timeouts"`
-	EnvPassthrough    []string      `yaml:"env_passthrough"`
+	MaxConcurrentJobs int           `yaml:"max_concurrent_jobs"` // Maximum parallel jobs the scheduler admits
+	MaxRepairAttempts int           `yaml:"max_repair_attempts"` // Maximum fix-loop iterations on build failure
+	PollInterval      time.Duration `yaml:"poll_interval"`       // Interval between intake polling sweeps
+	StepTimeouts      StepTimeouts  `yaml:"step_timeouts"`       // Timeout boundaries per pipeline step
+	EnvPassthrough    []string      `yaml:"env_passthrough"`     // Environment variables allowed into agent subprocesses
 }
 
-// GitHubConfig holds configuration for GitHub integration.
+// GitHubConfig holds configuration for GitHub repository integration.
 type GitHubConfig struct {
-	TokenEnv string `yaml:"token_env"`
+	TokenEnv string `yaml:"token_env"` // Name of the OS environment variable holding the personal access token
 }
 
 // ServerConfig holds HTTP server and authentication configuration.
 type ServerConfig struct {
-	Listen   string `yaml:"listen"`
-	APIToken string `yaml:"api_token"`
+	Listen   string `yaml:"listen"`    // Host and port to bind (e.g. 127.0.0.1:7878)
+	APIToken string `yaml:"api_token"` // Bearer token secret required for API access
 }
 
 // Config represents the complete global configuration for Garagefab.
@@ -44,10 +77,13 @@ type Config struct {
 	Server  ServerConfig `yaml:"server"`
 	Engine  EngineConfig `yaml:"engine"`
 	GitHub  GitHubConfig `yaml:"github"`
-	DataDir string       `yaml:"-"`
+	DataDir string       `yaml:"-"` // Resolved absolute path on disk (excluded from YAML serialization)
 }
 
-// Default returns a Config initialized with default settings.
+// Default returns a Config struct initialized with secure production defaults.
+//
+// Go Concept: Factory function returning default values.
+// In Java, this might be a static `Config.getDefault()` or defaults in `@ConfigurationProperties`.
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -71,9 +107,11 @@ func Default() *Config {
 
 // Load loads or creates configuration from the given data directory.
 // If dataDir is empty, it defaults to ~/.garagefab.
-// If the directory does not exist, it creates it with mode 0700.
-// If config.yaml does not exist, it generates a fresh one with a random API token and mode 0600.
+// If the directory does not exist, it creates it with mode 0700 (owner read/write/exec only).
+// If config.yaml does not exist, it generates a fresh one with a random 256-bit API token
+// and saves it with mode 0600 (owner read/write only).
 func Load(dataDir string) (*Config, error) {
+	// 1. Resolve default directory if none specified (~/.garagefab)
 	if dataDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -82,7 +120,7 @@ func Load(dataDir string) (*Config, error) {
 		dataDir = filepath.Join(home, ".garagefab")
 	}
 
-	// Ensure directory exists with 0700
+	// 2. Ensure data directory exists with strict permissions (0700: rwx------)
 	dirInfo, err := os.Stat(dataDir)
 	if os.IsNotExist(err) {
 		if err := os.MkdirAll(dataDir, 0700); err != nil {
@@ -91,7 +129,7 @@ func Load(dataDir string) (*Config, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("config: stat data dir %s: %w", dataDir, err)
 	} else {
-		// Directory exists, check permissions (SEC-7)
+		// Directory already exists: inspect Unix permissions (SEC-7)
 		if perm := dirInfo.Mode().Perm(); perm != 0700 {
 			slog.Warn("data directory permissions too permissive", "path", dataDir, "mode", fmt.Sprintf("%#o", perm), "expected", "0700")
 		}
@@ -101,16 +139,17 @@ func Load(dataDir string) (*Config, error) {
 	cfg := Default()
 	cfg.DataDir = dataDir
 
+	// 3. Inspect or create config.yaml
 	fileInfo, err := os.Stat(configFile)
 	if os.IsNotExist(err) {
-		// Generate random 32-byte API token (CLI-6)
+		// Generate cryptographically secure random 32-byte (256-bit) API token (CLI-6)
 		tokenBytes := make([]byte, 32)
 		if _, err := rand.Read(tokenBytes); err != nil {
 			return nil, fmt.Errorf("config: generate api token: %w", err)
 		}
 		cfg.Server.APIToken = hex.EncodeToString(tokenBytes)
 
-		// Serialize and write config.yaml with mode 0600
+		// Serialize to YAML and persist to disk with mode 0600 (rw-------)
 		data, err := yaml.Marshal(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("config: marshal new config: %w", err)
@@ -121,7 +160,7 @@ func Load(dataDir string) (*Config, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("config: stat config file %s: %w", configFile, err)
 	} else {
-		// Config file exists, check permissions (SEC-7)
+		// Existing config file: warn if readable by other OS users (SEC-7)
 		if perm := fileInfo.Mode().Perm(); perm != 0600 {
 			slog.Warn("config file permissions too permissive", "path", configFile, "mode", fmt.Sprintf("%#o", perm), "expected", "0600")
 		}
@@ -136,7 +175,7 @@ func Load(dataDir string) (*Config, error) {
 		}
 	}
 
-	// Validate configuration
+	// 4. Validate semantic constraints
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
@@ -144,16 +183,20 @@ func Load(dataDir string) (*Config, error) {
 	return cfg, nil
 }
 
+// validate ensures mandatory settings are valid and safe before booting the server.
 func validate(cfg *Config) error {
+	// API token must never be blank
 	if cfg.Server.APIToken == "" {
 		return fmt.Errorf("config: validation: server.api_token must not be empty")
 	}
 
+	// Parse host and port from "host:port" string
 	host, _, err := net.SplitHostPort(cfg.Server.Listen)
 	if err != nil {
 		return fmt.Errorf("config: validation: server.listen %q: %w", cfg.Server.Listen, err)
 	}
 
+	// Enforce loopback binding: Garagefab must never bind to public interfaces (0.0.0.0 or LAN IP)
 	if host != "localhost" {
 		ip := net.ParseIP(host)
 		if ip == nil || !ip.IsLoopback() {

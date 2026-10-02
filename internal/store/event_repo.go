@@ -1,3 +1,18 @@
+// Package store implements repository data access for audit events and SSE streams.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & REPOSITORY PATTERN:
+// Append-Only Event Store & SSE Backfill (LOG-4).
+//
+// Every meaningful state transition or progress milestone writes an immutable `Event`.
+// These events drive:
+//  1. Live Server-Sent Events (SSE) streaming to browser dashboards.
+//  2. Seamless SSE reconnection: When an SSE connection drops, browsers automatically
+//     send the `Last-Event-ID: <id>` HTTP header. The server calls `ListEventsSince`
+//     to stream all events missed during the disconnect.
+//  3. Historical timeline display on the web UI dashboard.
+//
+// ==============================================================================
 package store
 
 import (
@@ -38,7 +53,7 @@ func (r *EventRepo) CreateEvent(ctx context.Context, e *Event) error {
 	return nil
 }
 
-// ListEventsByJob retrieves all events for a given job ordered by event id.
+// ListEventsByJob retrieves all events for a given job ordered chronologically.
 func (r *EventRepo) ListEventsByJob(ctx context.Context, jobID int64) ([]*Event, error) {
 	query := `
 		SELECT id, job_id, type, payload, created_at
@@ -68,7 +83,8 @@ func (r *EventRepo) ListEventsByJob(ctx context.Context, jobID int64) ([]*Event,
 	return events, nil
 }
 
-// ListEventsSince retrieves events with ID > sinceID up to limit (used by SSE stream with Last-Event-ID).
+// ListEventsSince retrieves events with ID > sinceID up to limit.
+// This is used by SSE streaming endpoints when clients reconnect with `Last-Event-ID`.
 func (r *EventRepo) ListEventsSince(ctx context.Context, sinceID int64, limit int) ([]*Event, error) {
 	if limit <= 0 {
 		limit = 100

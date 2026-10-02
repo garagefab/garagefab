@@ -1,3 +1,32 @@
+// Package store owns all database schema models, SQL queries, transactions,
+// and embedded SQLite migrations for Garagefab.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & PATTERNS:
+// Persistence Layer & Repository Pattern (Hexagonal Driven Adapter).
+//
+// Under the architectural boundary rules (Rule 2 in `internal/boundaries_test.go`):
+//   - `internal/store` is the ONLY package in the entire codebase allowed to import `database/sql`.
+//   - No raw SQL or database drivers may leak outside of `store`.
+//   - Business logic in other packages interacts with data exclusively through repository methods
+//     or through the ports defined in `internal/factory`.
+//
+// GO CONCEPTS & JAVA / JPA / HIBERNATE COMPARISONS:
+//
+//  1. No ORM (Object-Relational Mapping):
+//     In Java/Spring: Teams often use Spring Data JPA / Hibernate (`@Entity`, `@Table`, `@ManyToOne`).
+//     In Go: Idiomatic Go avoids complex ORMs like Hibernate. Instead, plain structs and
+//     explicit SQL queries (`sql.DB`, `QueryRowContext`, `Scan`) are standard.
+//     Benefits:
+//     - Zero "N+1 query" surprises or lazy initialization exceptions.
+//     - Full control over SQL execution plans, indexing, and SQLite WAL settings.
+//     - Clear, readable, debuggable SQL statements.
+//
+//  2. Struct Tags (`json:"..."`):
+//     Struct fields map to JSON properties for API serialization.
+//     Pointer fields (e.g. `*int`, `*time.Time`) represent NULLable database columns.
+//
+// ==============================================================================
 package store
 
 import (
@@ -6,17 +35,21 @@ import (
 )
 
 var (
-	// ErrNotFound is returned when a requested record does not exist.
+	// ErrNotFound is returned when a requested record does not exist in the database.
+	// Java equivalent: EntityNotFoundException.
 	ErrNotFound = errors.New("store: record not found")
+
 	// ErrProjectNameExists is returned when registering a project with a duplicate name (PRJ-5).
 	ErrProjectNameExists = errors.New("store: project name already exists")
+
 	// ErrProjectRepoPathExists is returned when registering a project with a duplicate repo path (PRJ-5).
 	ErrProjectRepoPathExists = errors.New("store: project repo path already exists")
+
 	// ErrInvalidState is returned when an action violates state transition rules (PIP-3).
 	ErrInvalidState = errors.New("store: invalid state transition")
 )
 
-// Work type constants
+// Work type constants categorizing development requests.
 const (
 	WorkTypeBugFix   = "bug_fix"
 	WorkTypeFeature  = "feature"
@@ -24,7 +57,7 @@ const (
 	WorkTypeDocs     = "docs"
 )
 
-// Pipeline stage constants (PIP-1)
+// Pipeline stage constants (PIP-1) representing progress through SDLC.
 const (
 	StageIntent               = "01_Intent"
 	StageClarificationAndSpec = "02_Clarification_and_Spec"
@@ -35,7 +68,7 @@ const (
 	StageDone                 = "07_Done"
 )
 
-// Job status constants (spec §4.3)
+// Job status constants (spec §4.3).
 const (
 	StatusQueued             = "queued"
 	StatusRunning            = "running"
@@ -48,14 +81,14 @@ const (
 	StatusDone               = "done"
 )
 
-// Step run kind constants
+// Step run kind constants.
 const (
 	StepKindAgent   = "agent"
 	StepKindCommand = "command"
 	StepKindGate    = "gate"
 )
 
-// Step run status constants
+// Step run status constants.
 const (
 	StepStatusRunning = "running"
 	StepStatusSuccess = "success"
@@ -63,26 +96,26 @@ const (
 	StepStatusSkipped = "skipped"
 )
 
-// Failure category constants (§9.4)
+// Failure category constants (§9.4).
 const (
 	FailureFlawed  = "Flawed"
 	FailureBlocked = "Blocked"
 	FailureManual  = "Manual"
 )
 
-// Approval gate constants
+// Approval gate constants.
 const (
 	ApprovalGateSpecReview = "spec_review"
 	ApprovalGateFinal      = "final"
 )
 
-// Approval decision constants
+// Approval decision constants.
 const (
 	ApprovalDecisionApprove = "approve"
 	ApprovalDecisionReject  = "reject"
 )
 
-// Job source constants (INT-1..3)
+// Job source constants (INT-1..3).
 const (
 	SourceDashboard   = "dashboard"
 	SourceIntentFile  = "intent_file"
@@ -122,6 +155,7 @@ type Job struct {
 }
 
 // StepRun represents a single execution of an agent, command, or gate step (LOG-1).
+// Notice `ExitCode *int` and `EndedAt *time.Time`: pointers allow representing NULL in SQL.
 type StepRun struct {
 	ID              int64      `json:"id"`
 	JobID           int64      `json:"job_id"`

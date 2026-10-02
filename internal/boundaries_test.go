@@ -1,3 +1,34 @@
+// Package internal_test contains architectural fitness tests.
+//
+// ==============================================================================
+// ARCHITECTURAL FITNESS FUNCTIONS & JAVA / ARCHUNIT COMPARISON:
+//
+//  1. What is an Architectural Fitness Function?
+//     In software architecture, fitness functions are automated tests that continuously
+//     verify that code does not violate architectural constraints, layer boundaries,
+//     or dependency rules (e.g. Hexagonal/Onion/Clean Architecture rules).
+//
+//  2. Java / ArchUnit Comparison:
+//     In Java/Spring enterprise projects, ArchUnit is widely used:
+//     ArchRule myRule = classes().that().resideInAPackage("..factory..")
+//     .should().onlyDependOnClassesThat().resideInAnyPackage("..java..", "..factory..");
+//     ArchUnit uses Java reflection and bytecode inspection (`.class` files).
+//
+//  3. Go's Standard AST Parser (`go/parser`, `go/token`):
+//     Go does not need a third-party framework for this! The Go standard library includes
+//     a full compiler front-end:
+//     - `go/token`: Represents lexical tokens and source positions.
+//     - `go/parser`: Parses Go source code into an Abstract Syntax Tree (AST).
+//     By using `parser.ImportsOnly`, this test parses all `.go` files in the repository
+//     in milliseconds and inspects their `import` statements against the boundary rules
+//     specified in `PROJECT_DOCS/02_architecture.md` §6.
+//
+// 4. Architectural Rules Enforced Here:
+//   - Rule 1: `internal/factory` (core domain) must NEVER import `store`, `worker`, `provider`, or `server`.
+//   - Rule 2: `internal/store` is the ONLY package allowed to import `database/sql`.
+//   - Rule 3: `internal/worker` must NEVER import `store`.
+//
+// ==============================================================================
 package internal_test
 
 import (
@@ -14,14 +45,16 @@ func TestArchitectureImportBoundaries(t *testing.T) {
 	// Root of the repository is one level above internal/
 	repoRoot := ".."
 
+	// token.NewFileSet manages file position and line number tracking for the parser
 	fset := token.NewFileSet()
 
+	// Recursively walk every directory and file in the project
 	err := filepath.Walk(repoRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Skip hidden directories, vendor, node_modules, and UI
+		// Skip hidden directories (.git, .github), build outputs, and node dependencies
 		if info.IsDir() {
 			base := filepath.Base(path)
 			if strings.HasPrefix(base, ".") || base == "node_modules" || base == "ui" || base == "bin" {
@@ -30,18 +63,22 @@ func TestArchitectureImportBoundaries(t *testing.T) {
 			return nil
 		}
 
+		// Only inspect Go source files (*.go)
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
 
+		// Parse only the package declaration and import statements (ImportsOnly mode) for high speed
 		node, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if err != nil {
 			return err
 		}
 
+		// Convert OS file path to normalized forward-slash path (e.g. internal/factory/pipeline.go)
 		relPath, _ := filepath.Rel(repoRoot, path)
 		slashPath := filepath.ToSlash(relPath)
 
+		// Check every import in the file against our architectural rules
 		for _, imp := range node.Imports {
 			importPath := strings.Trim(imp.Path.Value, `"`)
 

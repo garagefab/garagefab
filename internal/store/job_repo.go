@@ -1,3 +1,27 @@
+// Package store implements repository data access for pipeline jobs.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & REPOSITORY PATTERN:
+// Job Data Access & Dynamic Query Construction (PIP-1..5, SCH-1..4, CLI-4).
+//
+// `JobRepo` manages SQL persistence for jobs.
+//
+// GO CONCEPTS & JAVA COMPARISONS:
+//
+//  1. Dynamic SQL Query Construction:
+//     In Spring Data JPA: You would use `JpaSpecificationExecutor` and `CriteriaBuilder`.
+//     In Go: Writing dynamic SQL is straightforward string manipulation:
+//     var whereClauses []string
+//     var args []any
+//     if filter.ProjectID != nil { whereClauses = append(whereClauses, "project_id = ?"); args = append(...) }
+//     query += " WHERE " + strings.Join(whereClauses, " AND ")
+//     This is lightweight, explicit, and easy to inspect and debug.
+//
+//  2. FIFO Queue Ordering (SCH-3):
+//     `GetNextQueuedJob` orders by auto-increment `id ASC LIMIT 1`. Since SQLite integer
+//     primary keys monotonically increase, this guarantees strict First-In-First-Out admission.
+//
+// ==============================================================================
 package store
 
 import (
@@ -19,6 +43,7 @@ func (r *JobRepo) CreateJob(ctx context.Context, j *Job) error {
 	now := time.Now().UTC()
 	nowStr := formatTime(now)
 
+	// Set initial defaults if omitted
 	if j.Stage == "" {
 		j.Stage = StageIntent
 	}
@@ -58,7 +83,7 @@ func (r *JobRepo) CreateJob(ctx context.Context, j *Job) error {
 	return nil
 }
 
-// GetJob retrieves a job by ID.
+// GetJob retrieves a job by its primary key ID.
 func (r *JobRepo) GetJob(ctx context.Context, id int64) (*Job, error) {
 	query := `
 		SELECT id, project_id, work_type, title, intent, source, source_ref,
@@ -127,6 +152,7 @@ func (r *JobRepo) ListJobs(ctx context.Context, filter JobListFilter) ([]*Job, e
 	var whereClauses []string
 	var args []any
 
+	// Conditionally append filter clauses
 	if filter.ProjectID != nil {
 		whereClauses = append(whereClauses, "project_id = ?")
 		args = append(args, *filter.ProjectID)
@@ -139,6 +165,7 @@ func (r *JobRepo) ListJobs(ctx context.Context, filter JobListFilter) ([]*Job, e
 		whereClauses = append(whereClauses, "stage = ?")
 		args = append(args, *filter.Stage)
 	}
+	// Cursor-based pagination: fetch items with ID less than cursor
 	if filter.Cursor > 0 {
 		whereClauses = append(whereClauses, "id < ?")
 		args = append(args, filter.Cursor)
@@ -288,6 +315,7 @@ func (r *JobRepo) ListAttentionJobs(ctx context.Context) ([]*Job, error) {
 }
 
 // ListActiveStatusJobs returns active running jobs and attention-needing jobs with project names (CLI-4).
+// It performs an SQL JOIN between jobs and projects.
 func (r *JobRepo) ListActiveStatusJobs(ctx context.Context) ([]*JobStatusItem, error) {
 	query := `
 		SELECT j.id, COALESCE(p.name, ''), j.work_type, j.stage, j.status, j.title

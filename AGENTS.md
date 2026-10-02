@@ -37,7 +37,25 @@ Prerequisites: Go 1.22+, Node 20+, git 2.30+, golangci-lint.
 - **Logging:** Use `log/slog` with structured fields. Include `job_id` and `step_id` where applicable.
 - **Testing:** Table-driven tests preferred. Test names should reference requirement IDs where applicable (e.g., `TestLockFile_SecondInstance_RCV5`).
 - **No CGO:** The binary must build with `CGO_ENABLED=0`. Never add a dependency that requires CGO.
-- **Comments:** Preserve all existing comments and docstrings unrelated to your changes.
+- **Comments:** Follow the Educational & Architecture-Aware Code Comments standard below. Preserve all existing comments and docstrings unrelated to your changes.
+
+### Educational & Architecture-Aware Code Comments
+
+All Go source and test files must maintain a comprehensive, educational commenting standard so that developers without prior Go experience (especially engineers coming from Java/Spring and enterprise backend backgrounds) can easily understand the design, concepts, and implementation:
+
+1. **File Header: Architectural Role & Enterprise/Java Bridge**
+   - Every file must begin with a package-level header comment explaining its role in Hexagonal / Clean Architecture (Domain Core, Inbound/Outbound Port, Driving/Driven Adapter, Composition Root).
+   - Provide concrete Java / Spring Boot comparisons (e.g., `@RestController`, Spring Data JPA, `TaskExecutor`, `ProcessBuilder`, Flyway/Liquibase, ArchUnit, `@Transactional`).
+
+2. **Go Idiom & Language Concept Bridge**
+   - Explain Go-specific mechanisms used in the file for engineers unfamiliar with Go (e.g., pointers `*` vs `&`, structural subtyping / implicit interfaces, `defer`, Goroutines & channels, `select`, `dbtx` interface pattern, `io/fs.FS`, `//go:embed`, linker `-ldflags -X`).
+   - Highlight *why* Go uses that pattern (e.g., why explicit `dbtx` is preferred over ThreadLocal transactions).
+
+3. **In-Line Logic & Rationale**
+   - Explain the "why" behind non-obvious steps, error handling strategies, goroutine synchronization, and security guardrails inline.
+   - Focus on clear operational explanations rather than mechanical restatements of the code.
+
+**Preservation Rule:** AI agents modifying existing files must never remove, shorten, or overwrite existing educational comments. When adding new features or refactoring, new code must be documented following this exact standard.
 
 ## Package Layout and Dependency Rules
 

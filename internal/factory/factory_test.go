@@ -1,3 +1,20 @@
+// Package factory_test contains isolated unit tests for the factory engine and scheduler.
+//
+// ==============================================================================
+// GO TESTING PATTERNS & HANDWRITTEN MOCKS VS MOCKITO:
+//
+// 1. Handwritten Mocks vs Java Mockito:
+//   - In Java/Spring: Developers heavily rely on Mockito (`@Mock`, `when(...).thenReturn(...)`),
+//     which uses runtime CGLIB/ByteBuddy bytecode manipulation and reflection.
+//   - In Go: The universal convention is "Handwritten Mocks / Fakes".
+//     `MockStore`, `MockWorktreeManager`, and `MockAgentRunner` are plain Go structs
+//     storing in-memory maps or recording invocations.
+//   - Advantages:
+//   - 100% Compile-Time Safe: If an interface changes, compiler errors show exactly what's broken.
+//   - Zero Reflection & Zero Dependencies: Runs in microseconds.
+//   - Predictable Concurrency: Can be protected with standard `sync.Mutex`.
+//
+// ==============================================================================
 package factory_test
 
 import (
@@ -11,7 +28,7 @@ import (
 	"github.com/garagefab/garagefab/internal/factory"
 )
 
-// MockStore implements factory.Store in-memory for testing
+// MockStore implements factory.Store completely in-memory using Go maps and mutexes.
 type MockStore struct {
 	mu           sync.Mutex
 	jobs         map[int64]*factory.Job
@@ -40,7 +57,7 @@ func (m *MockStore) GetJob(ctx context.Context, id int64) (*factory.Job, error) 
 	if !ok {
 		return nil, fmt.Errorf("job %d not found", id)
 	}
-	cp := *j
+	cp := *j // Return shallow copy to avoid concurrent mutations
 	return &cp, nil
 }
 
@@ -192,7 +209,7 @@ func (tx *mockTx) RecordApproval(ctx context.Context, a *factory.Approval) error
 	return nil
 }
 
-// MockWorktreeManager
+// MockWorktreeManager provides an in-memory double of factory.WorktreeManager.
 type MockWorktreeManager struct {
 	createdWorktrees map[int64]string
 	checkpoints      map[int64]string
@@ -241,7 +258,7 @@ func (m *MockWorktreeManager) HeadSHA(ctx context.Context, worktreePath string) 
 	return "head123", nil
 }
 
-// MockAgentRunner
+// MockAgentRunner provides an in-memory double of factory.AgentRunner.
 type MockAgentRunner struct {
 	invocations []factory.AgentRequest
 	failCoding  bool
@@ -258,8 +275,13 @@ func (m *MockAgentRunner) Run(ctx context.Context, req factory.AgentRequest) (*f
 	return &factory.AgentResult{ExitCode: 0, Summary: "ok"}, nil
 }
 
-// Tests
+// ------------------------------------------------------------------------------
+// Unit Tests
+// ------------------------------------------------------------------------------
 
+// TestEngine_RefactorHappyPath_PIP1_APR5 tests requirements PIP-1 and APR-5:
+// Job executes through Coding and Review, reaches Human Approval Gate,
+// rejects mismatched head SHA (stale evidence), and completes when approved.
 func TestEngine_RefactorHappyPath_PIP1_APR5(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore()
@@ -314,6 +336,8 @@ func TestEngine_RefactorHappyPath_PIP1_APR5(t *testing.T) {
 	}
 }
 
+// TestEngine_Rejection_APR6 tests requirement APR-6:
+// Rejection requires a non-empty human note and regresses job back to 04_Coding / queued.
 func TestEngine_Rejection_APR6(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore()
@@ -332,7 +356,7 @@ func TestEngine_Rejection_APR6(t *testing.T) {
 		HeadSHA:   "valid-sha",
 	}
 
-	// Reject without note must fail
+	// Reject without note must fail (APR-6)
 	err := engine.Reject(ctx, 20, "")
 	if !errors.Is(err, factory.ErrEmptyRejectionNote) {
 		t.Errorf("expected ErrEmptyRejectionNote, got %v", err)
@@ -350,6 +374,8 @@ func TestEngine_Rejection_APR6(t *testing.T) {
 	}
 }
 
+// TestScheduler_ConcurrencyLimit_SCH1_3 tests requirements SCH-1 and SCH-3:
+// Queue contains 3 jobs, max concurrency = 2. Scheduler admits up to limit.
 func TestScheduler_ConcurrencyLimit_SCH1_3(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -374,14 +400,14 @@ func TestScheduler_ConcurrencyLimit_SCH1_3(t *testing.T) {
 		}
 	}
 
-	// Limit to max 2 concurrent jobs
+	// Limit scheduler to max 2 concurrent jobs
 	scheduler := factory.NewScheduler(store, engine, 2)
 	go scheduler.Start(ctx)
 
 	// Wait briefly for scheduler to process jobs
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify all jobs either completed or reached gate
+	// Wait for all jobs to reach gate
 	time.Sleep(200 * time.Millisecond)
 
 	for i := 1; i <= 3; i++ {

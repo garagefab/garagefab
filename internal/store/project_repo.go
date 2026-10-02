@@ -1,3 +1,29 @@
+// Package store implements repository data access for projects.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & REPOSITORY PATTERN:
+// Repository Pattern (PRJ-1..6, PRJ-8).
+//
+// `ProjectRepo` provides CRUD and query methods for registered Git projects.
+//
+// GO CONCEPTS & JAVA COMPARISONS:
+//
+//  1. Parametrized SQL Queries (`?` placeholders):
+//     In Java/JDBC: You use `PreparedStatement` with `?`.
+//     In Go: `r.q.ExecContext(ctx, query, args...)` automatically prepares the query
+//     and binds parameters, preventing SQL injection vulnerabilities.
+//
+//  2. Polymorphic Row Scanning (`rowScanner` Interface):
+//     `*sql.Row` (from `QueryRowContext`) and `*sql.Rows` (from `QueryContext`) both
+//     implement the method `Scan(dest ...any) error`.
+//     By defining a private interface `type rowScanner interface { Scan(...any) error }`,
+//     the same `scanProject` helper function can parse single rows or loop over row sets!
+//
+//  3. JSON Columns in SQLite:
+//     Go slices like `EnabledWorkTypes []string` are marshaled to JSON strings before
+//     insertion and unmarshaled on scan.
+//
+// ==============================================================================
 package store
 
 import (
@@ -12,12 +38,13 @@ import (
 
 // ProjectRepo handles database operations for projects (PRJ-1..6).
 type ProjectRepo struct {
-	q dbtx
+	q dbtx // Injected query executor (either *DB or *Tx)
 }
 
 // CreateProject inserts a new project into the database.
 // It returns ErrProjectNameExists or ErrProjectRepoPathExists if unique constraints are violated (PRJ-5).
 func (r *ProjectRepo) CreateProject(ctx context.Context, p *Project) error {
+	// Serialize work types slice to JSON text
 	workTypesJSON, err := json.Marshal(p.EnabledWorkTypes)
 	if err != nil {
 		return fmt.Errorf("store: marshal enabled_work_types: %w", err)
@@ -40,9 +67,11 @@ func (r *ProjectRepo) CreateProject(ctx context.Context, p *Project) error {
 		isArchivedInt = 1
 	}
 
+	// Execute parameterized insert
 	res, err := r.q.ExecContext(ctx, query, p.Name, p.RepoPath, baseRef, string(workTypesJSON), isArchivedInt, nowStr, nowStr)
 	if err != nil {
 		errStr := err.Error()
+		// Translate SQLite unique constraint violations into domain errors (PRJ-5)
 		if strings.Contains(errStr, "UNIQUE constraint failed: projects.name") {
 			return ErrProjectNameExists
 		}
@@ -52,6 +81,7 @@ func (r *ProjectRepo) CreateProject(ctx context.Context, p *Project) error {
 		return fmt.Errorf("store: insert project: %w", err)
 	}
 
+	// Retrieve auto-generated SQLite rowid
 	id, err := res.LastInsertId()
 	if err != nil {
 		return fmt.Errorf("store: get project last insert id: %w", err)
@@ -64,7 +94,7 @@ func (r *ProjectRepo) CreateProject(ctx context.Context, p *Project) error {
 	return nil
 }
 
-// GetProject retrieves a project by ID.
+// GetProject retrieves a project by its primary key ID.
 func (r *ProjectRepo) GetProject(ctx context.Context, id int64) (*Project, error) {
 	query := `
 		SELECT id, name, repo_path, base_ref, enabled_work_types, is_archived, created_at, updated_at
@@ -75,7 +105,7 @@ func (r *ProjectRepo) GetProject(ctx context.Context, id int64) (*Project, error
 	return scanProject(row)
 }
 
-// GetProjectByName retrieves a project by name.
+// GetProjectByName retrieves a project by its unique name.
 func (r *ProjectRepo) GetProjectByName(ctx context.Context, name string) (*Project, error) {
 	query := `
 		SELECT id, name, repo_path, base_ref, enabled_work_types, is_archived, created_at, updated_at
@@ -86,7 +116,7 @@ func (r *ProjectRepo) GetProjectByName(ctx context.Context, name string) (*Proje
 	return scanProject(row)
 }
 
-// GetProjectByRepoPath retrieves a project by repo path.
+// GetProjectByRepoPath retrieves a project by its repository filesystem path.
 func (r *ProjectRepo) GetProjectByRepoPath(ctx context.Context, repoPath string) (*Project, error) {
 	query := `
 		SELECT id, name, repo_path, base_ref, enabled_work_types, is_archived, created_at, updated_at
@@ -97,7 +127,7 @@ func (r *ProjectRepo) GetProjectByRepoPath(ctx context.Context, repoPath string)
 	return scanProject(row)
 }
 
-// ListProjects returns all non-archived projects.
+// ListProjects returns all active (non-archived) projects ordered by ID.
 func (r *ProjectRepo) ListProjects(ctx context.Context) ([]*Project, error) {
 	query := `
 		SELECT id, name, repo_path, base_ref, enabled_work_types, is_archived, created_at, updated_at
@@ -109,7 +139,7 @@ func (r *ProjectRepo) ListProjects(ctx context.Context) ([]*Project, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: list projects: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() // Guarantee rows cursor is closed when function returns
 
 	var projects []*Project
 	for rows.Next() {
@@ -120,6 +150,7 @@ func (r *ProjectRepo) ListProjects(ctx context.Context) ([]*Project, error) {
 		projects = append(projects, p)
 	}
 
+	// Check if any error occurred during iteration
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: list projects rows: %w", err)
 	}
@@ -127,7 +158,7 @@ func (r *ProjectRepo) ListProjects(ctx context.Context) ([]*Project, error) {
 	return projects, nil
 }
 
-// UpdateProject updates mutable fields of a project.
+// UpdateProject updates mutable configuration properties of a project.
 func (r *ProjectRepo) UpdateProject(ctx context.Context, p *Project) error {
 	workTypesJSON, err := json.Marshal(p.EnabledWorkTypes)
 	if err != nil {
@@ -166,7 +197,7 @@ func (r *ProjectRepo) UpdateProject(ctx context.Context, p *Project) error {
 	return nil
 }
 
-// ArchiveProject marks a project as archived (PRJ-8).
+// ArchiveProject soft-deletes a project by marking is_archived = 1 (PRJ-8).
 func (r *ProjectRepo) ArchiveProject(ctx context.Context, id int64) error {
 	nowStr := formatTime(time.Now().UTC())
 	query := `UPDATE projects SET is_archived = 1, updated_at = ? WHERE id = ?`
@@ -184,6 +215,7 @@ func (r *ProjectRepo) ArchiveProject(ctx context.Context, id int64) error {
 	return nil
 }
 
+// rowScanner abstracts *sql.Row and *sql.Rows for unified column scanning.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -197,6 +229,7 @@ func scanProject(row rowScanner) (*Project, error) {
 		updatedAtStr  string
 	)
 
+	// Scan maps database columns by reference into local variables
 	err := row.Scan(
 		&p.ID,
 		&p.Name,

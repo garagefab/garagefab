@@ -1,3 +1,23 @@
+// Package server_test contains integration tests for the HTTP server, routing, and APIs.
+//
+// ==============================================================================
+// GO TESTING CONCEPTS & HTTP INTEGRATION TESTING:
+//
+//  1. `httptest.NewRequest` and `httptest.NewRecorder`:
+//     Equivalent to Spring's `MockMvc` or `TestRestTemplate`.
+//     It executes the full Chi router and middleware chain completely in-memory
+//     without binding a physical TCP socket, making test execution virtually instantaneous.
+//
+//  2. Testing Virtual Filesystems (`testing/fstest.MapFS`):
+//     Go standard library provides `fstest.MapFS` to mock `io/fs.FS` filesystems
+//     in unit tests without touching the real disk.
+//
+//  3. Testing Real-Time SSE Streams:
+//     Using a cancellable context `context.WithCancel(context.Background())` to run
+//     the SSE stream in a background goroutine, inspect the written buffer, and cleanly
+//     cancel the context to terminate the streaming loop.
+//
+// ==============================================================================
 package server_test
 
 import (
@@ -76,6 +96,8 @@ func setupTestServer(t *testing.T) (*server.Server, *store.DB, *mockEngine, *moc
 	return srv, db, engine, scheduler
 }
 
+// TestHealthEndpoint_CLI1 verifies requirement CLI-1:
+// GET /api/health returns status 200 and JSON {"status":"ok"}.
 func TestHealthEndpoint_CLI1(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.Listen = "127.0.0.1:7878"
@@ -108,13 +130,15 @@ func TestHealthEndpoint_CLI1(t *testing.T) {
 	}
 }
 
+// TestHostHeaderCheck_SEC2 verifies requirement SEC-2:
+// DNS rebinding protection rejects external Host headers with 403 Forbidden.
 func TestHostHeaderCheck_SEC2(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.Listen = "127.0.0.1:7878"
 
 	srv := server.NewServer(cfg, nil, nil, nil, nil)
 
-	// Disallowed Host header
+	// Disallowed external Host header
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	req.Host = "attacker.example.com"
 	w := httptest.NewRecorder()
@@ -138,10 +162,13 @@ func TestHostHeaderCheck_SEC2(t *testing.T) {
 	}
 }
 
+// TestSPAFallback verifies Single Page Application fallback routing:
+// Non-existent routes serve index.html, assets are served directly, and unmapped API paths 404.
 func TestSPAFallback(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.Listen = "127.0.0.1:7878"
 
+	// Mock embedded frontend virtual filesystem using fstest.MapFS
 	mockFS := fstest.MapFS{
 		"index.html":    {Data: []byte("<html><body>Dashboard</body></html>")},
 		"assets/app.js": {Data: []byte("console.log('app')")},
@@ -149,7 +176,7 @@ func TestSPAFallback(t *testing.T) {
 
 	srv := server.NewServer(cfg, nil, nil, nil, mockFS)
 
-	// Root path should serve index.html
+	// Root path (/) should serve index.html
 	req1 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req1.Host = "127.0.0.1:7878"
 	w1 := httptest.NewRecorder()
@@ -158,7 +185,7 @@ func TestSPAFallback(t *testing.T) {
 		t.Errorf("expected index.html, got %q", body)
 	}
 
-	// Unknown non-api route should fall back to index.html (SPA routing)
+	// Unknown non-api route should fall back to index.html for React Router
 	req2 := httptest.NewRequest(http.MethodGet, "/projects/1/jobs/2", nil)
 	req2.Host = "127.0.0.1:7878"
 	w2 := httptest.NewRecorder()
@@ -167,7 +194,7 @@ func TestSPAFallback(t *testing.T) {
 		t.Errorf("expected SPA fallback to index.html, got %q", body)
 	}
 
-	// Existing static asset
+	// Existing static asset (/assets/app.js)
 	req3 := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
 	req3.Host = "127.0.0.1:7878"
 	w3 := httptest.NewRecorder()
@@ -176,7 +203,7 @@ func TestSPAFallback(t *testing.T) {
 		t.Errorf("expected asset app.js, got %q", body)
 	}
 
-	// Unknown API route should 404, not fallback
+	// Unknown API route must return 404, not SPA fallback
 	req4 := httptest.NewRequest(http.MethodGet, "/api/unknown", nil)
 	req4.Host = "127.0.0.1:7878"
 	w4 := httptest.NewRecorder()
@@ -186,10 +213,12 @@ func TestSPAFallback(t *testing.T) {
 	}
 }
 
+// TestAuth_Bearer_And_Session_SEC3 tests requirement SEC-3:
+// Supports both Bearer token header and gf_session cookie authentication.
 func TestAuth_Bearer_And_Session_SEC3(t *testing.T) {
 	srv, _, _, _ := setupTestServer(t)
 
-	// 1. Unauthenticated request -> 401
+	// 1. Unauthenticated request -> 401 Unauthorized
 	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
 	req.Host = "127.0.0.1:7878"
 	w := httptest.NewRecorder()
@@ -198,7 +227,7 @@ func TestAuth_Bearer_And_Session_SEC3(t *testing.T) {
 		t.Errorf("expected 401 for unauthenticated request, got %d", w.Code)
 	}
 
-	// 2. Bearer token auth -> 200
+	// 2. Bearer token auth -> 200 OK
 	reqBearer := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
 	reqBearer.Host = "127.0.0.1:7878"
 	reqBearer.Header.Set("Authorization", "Bearer test-secret-token")
@@ -230,7 +259,7 @@ func TestAuth_Bearer_And_Session_SEC3(t *testing.T) {
 		t.Fatal("expected gf_session cookie to be set")
 	}
 
-	// 4. Request with Session cookie -> 200
+	// 4. Request with Session cookie -> 200 OK
 	reqCookie := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
 	reqCookie.Host = "127.0.0.1:7878"
 	reqCookie.AddCookie(sessionCookie)
@@ -241,6 +270,8 @@ func TestAuth_Bearer_And_Session_SEC3(t *testing.T) {
 	}
 }
 
+// TestApproveReject_SessionOnly_SEC4_APR7 verifies requirements SEC-4 and APR-7:
+// Human approval and rejection actions strictly require a browser session cookie.
 func TestApproveReject_SessionOnly_SEC4_APR7(t *testing.T) {
 	srv, _, engine, _ := setupTestServer(t)
 
@@ -285,7 +316,7 @@ func TestApproveReject_SessionOnly_SEC4_APR7(t *testing.T) {
 		t.Errorf("APR-6 violated: expected 422 for empty rejection note, got %d", wEmptyNote.Code)
 	}
 
-	// 4. Reject with Session cookie and note -> 200
+	// 4. Reject with Session cookie and valid note -> 200 OK
 	reqReject := httptest.NewRequest(http.MethodPost, "/api/jobs/1/reject", strings.NewReader(`{"note":"Need fix"}`))
 	reqReject.Host = "127.0.0.1:7878"
 	reqReject.AddCookie(cookie)
@@ -299,7 +330,7 @@ func TestApproveReject_SessionOnly_SEC4_APR7(t *testing.T) {
 		t.Errorf("expected engine to receive rejection note, got %q", engine.rejectedNote)
 	}
 
-	// 5. Approve with Session cookie -> 200
+	// 5. Approve with Session cookie -> 200 OK
 	reqApprove := httptest.NewRequest(http.MethodPost, "/api/jobs/1/approve", strings.NewReader(`{"head_sha":"sha-valid"}`))
 	reqApprove.Host = "127.0.0.1:7878"
 	reqApprove.AddCookie(cookie)
@@ -314,6 +345,8 @@ func TestApproveReject_SessionOnly_SEC4_APR7(t *testing.T) {
 	}
 }
 
+// TestProjectAndJobAPIs_PRJ1_INT1 tests requirements PRJ-1..5 and INT-1:
+// Creating projects and creating jobs via REST APIs.
 func TestProjectAndJobAPIs_PRJ1_INT1(t *testing.T) {
 	srv, _, _, scheduler := setupTestServer(t)
 
@@ -378,10 +411,12 @@ func TestProjectAndJobAPIs_PRJ1_INT1(t *testing.T) {
 	}
 }
 
+// TestSSE_Events_LOG4 tests requirement LOG-4:
+// Real-time Server-Sent Events (SSE) streaming and event emission.
 func TestSSE_Events_LOG4(t *testing.T) {
 	srv, db, _, _ := setupTestServer(t)
 
-	// Pre-seed an event
+	// Pre-seed an event in the database
 	p := &store.Project{Name: "p-sse", RepoPath: "/tmp/p-sse"}
 	_ = db.Projects().CreateProject(context.Background(), p)
 	j := &store.Job{ProjectID: p.ID, WorkType: "refactor", Title: "SSE Job"}

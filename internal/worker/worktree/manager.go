@@ -1,3 +1,32 @@
+// Package worktree manages the lifecycle of isolated Git worktrees for parallel jobs.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & PATTERNS:
+// Git Worktree Isolation & Per-Project Concurrency Serialization (WKT-1..9).
+//
+// What is a Git Worktree?
+// In standard Git, a repository has a single working directory linked to `.git`. You can
+// only checkout one branch at a time.
+// `git worktree add` allows checking out multiple branches simultaneously into separate,
+// isolated directories while sharing the same underlying `.git` object store and history.
+//
+// Why is this fundamental to Garagefab?
+// 1. Isolation: Coding agents run in their own worktree (`~/.garagefab/worktrees/<project>/<job-id>`).
+// 2. Zero Contamination: The developer's primary checkout and branch are NEVER modified (WKT-4).
+// 3. Parallelism: Multiple jobs can execute concurrently on different branches of the same repo.
+//
+// GO CONCEPTS & CONCURRENCY CONTROLS:
+//
+//  1. Per-Project Mutex Map (`sync.Mutex`):
+//     Although worktrees are isolated directories, Git's internal index and ref updates
+//     (e.g. `git worktree add` or `git branch`) share `.git/index.lock`.
+//     If two goroutines run `git worktree add` simultaneously on the same repository,
+//     Git crashes with "index.lock already exists".
+//     We solve this with a thread-safe mutex map:
+//     - `m.mu` (master mutex) protects the map of project locks.
+//     - `m.projectLocks[repoPath]` serializes operations on that specific repository (WKT-9).
+//
+// ==============================================================================
 package worktree
 
 import (
@@ -21,17 +50,17 @@ var (
 
 // WorktreeInfo contains metadata about an active worktree.
 type WorktreeInfo struct {
-	Path      string `json:"path"`
-	Branch    string `json:"branch"`
-	BaseSHA   string `json:"base_sha"`
-	FetchWarn bool   `json:"fetch_warn"`
+	Path      string `json:"path"`       // Absolute path to the isolated worktree directory on disk
+	Branch    string `json:"branch"`     // Dedicated git branch name (e.g. "garagefab/job-42")
+	BaseSHA   string `json:"base_sha"`   // Starting Git commit SHA that the branch was forked from
+	FetchWarn bool   `json:"fetch_warn"` // True if remote fetch timed out or failed, using local fallback
 }
 
 // Manager manages git worktrees for jobs with per-project mutex serialization (WKT-1..9).
 type Manager struct {
-	worktreeBaseDir string
-	mu              sync.Mutex
-	projectLocks    map[string]*sync.Mutex
+	worktreeBaseDir string                 // Base directory where worktrees are provisioned (~/.garagefab/worktrees)
+	mu              sync.Mutex             // Master mutex protecting the projectLocks map
+	projectLocks    map[string]*sync.Mutex // Map from repoPath -> Mutex for per-project serialization
 }
 
 // NewManager creates a worktree manager storing worktrees under worktreeBaseDir.
@@ -42,6 +71,8 @@ func NewManager(worktreeBaseDir string) *Manager {
 	}
 }
 
+// getProjectLock returns the synchronization mutex for the specified repository path.
+// It uses `m.mu` to safely read or insert into the map.
 func (m *Manager) getProjectLock(repoPath string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -56,15 +87,16 @@ func (m *Manager) getProjectLock(repoPath string) *sync.Mutex {
 }
 
 // Create creates a new worktree for jobID branched from baseRef (WKT-1, WKT-2, WKT-3, WKT-9).
-// Operations on the same repository are serialized (WKT-9).
+// All operations targeting the same repository are serialized to prevent `.git/index.lock` collisions.
 func (m *Manager) Create(ctx context.Context, repoPath, projectName string, jobID int64, baseRef string) (*WorktreeInfo, error) {
+	// Acquire per-repository mutex (WKT-9)
 	lock := m.getProjectLock(repoPath)
 	lock.Lock()
 	defer lock.Unlock()
 
 	branchName := fmt.Sprintf("garagefab/job-%d", jobID)
 
-	// Check if branch already exists (WKT-7)
+	// Check if branch already exists from a previous crash or duplicate intake (WKT-7)
 	checkBranchCmd := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--verify", "refs/heads/"+branchName)
 	if err := checkBranchCmd.Run(); err == nil {
 		return nil, fmt.Errorf("%w: %s in %s", ErrBranchAlreadyExists, branchName, repoPath)
@@ -74,7 +106,7 @@ func (m *Manager) Create(ctx context.Context, repoPath, projectName string, jobI
 		baseRef = "origin/main"
 	}
 
-	// Fetch baseRef remote with timeout (WKT-1, WKT-2)
+	// Fetch baseRef from remote with a 10s timeout (WKT-1, WKT-2)
 	fetchWarn := false
 	remote := "origin"
 	if parts := strings.Split(baseRef, "/"); len(parts) > 1 {
@@ -87,7 +119,7 @@ func (m *Manager) Create(ctx context.Context, repoPath, projectName string, jobI
 	fetchCmd := exec.CommandContext(fetchCtx, "git", "-C", repoPath, "fetch", remote)
 	if err := fetchCmd.Run(); err != nil {
 		fetchWarn = true
-		// Verify local fallback exists (WKT-2)
+		// Verify local fallback ref exists if offline or fetch failed (WKT-2)
 		localRef := baseRef
 		if strings.HasPrefix(baseRef, remote+"/") {
 			localRef = strings.TrimPrefix(baseRef, remote+"/")
@@ -95,7 +127,7 @@ func (m *Manager) Create(ctx context.Context, repoPath, projectName string, jobI
 
 		checkLocal := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--verify", localRef)
 		if err := checkLocal.Run(); err != nil {
-			// Also check if remote tracking branch is cached locally
+			// Also check if remote tracking branch is cached locally in refs/remotes
 			checkRemoteLocal := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--verify", baseRef)
 			if err := checkRemoteLocal.Run(); err != nil {
 				return nil, fmt.Errorf("%w: fetch failed and local ref %q not found: %v", ErrBaseRefNotFound, baseRef, err)
@@ -111,7 +143,7 @@ func (m *Manager) Create(ctx context.Context, repoPath, projectName string, jobI
 		return nil, fmt.Errorf("worktree: create parent dir: %w", err)
 	}
 
-	// Ensure worktreePath is clean before adding
+	// Clean any dangling directory at target path
 	_ = os.RemoveAll(worktreePath)
 
 	// Add git worktree: git worktree add -b garagefab/job-<id> <path> <base_ref> (WKT-1)
@@ -120,7 +152,7 @@ func (m *Manager) Create(ctx context.Context, repoPath, projectName string, jobI
 		return nil, fmt.Errorf("worktree: git worktree add failed: %s: %w", string(out), err)
 	}
 
-	// Get base SHA in the worktree (WKT-3)
+	// Capture the exact base commit SHA in the newly created worktree (WKT-3)
 	shaCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "HEAD")
 	baseSHABytes, err := shaCmd.Output()
 	if err != nil {
@@ -136,19 +168,23 @@ func (m *Manager) Create(ctx context.Context, repoPath, projectName string, jobI
 	}, nil
 }
 
-// Checkpoint creates a checkpoint commit with all current changes in the worktree (WKT-5, COD-9).
+// Checkpoint stages all changes and creates an automated git commit in the worktree (WKT-5, COD-9).
+// It returns the newly created commit SHA.
 func (m *Manager) Checkpoint(ctx context.Context, worktreePath string, jobID int64, message string) (string, error) {
+	// Stage all tracked and untracked files
 	addCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "add", "-A")
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("worktree: checkpoint git add: %s: %w", string(out), err)
 	}
 
+	// Create commit with --no-verify (bypassing pre-commit hooks) and --allow-empty
 	commitMsg := fmt.Sprintf("garagefab(job-%d): %s", jobID, message)
 	commitCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "commit", "--no-verify", "--allow-empty", "-m", commitMsg)
 	if out, err := commitCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("worktree: checkpoint git commit: %s: %w", string(out), err)
 	}
 
+	// Retrieve the commit SHA of the checkpoint
 	shaCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "HEAD")
 	shaBytes, err := shaCmd.Output()
 	if err != nil {
@@ -158,17 +194,20 @@ func (m *Manager) Checkpoint(ctx context.Context, worktreePath string, jobID int
 	return strings.TrimSpace(string(shaBytes)), nil
 }
 
-// Reset resets worktree to the specified checkpoint SHA (WKT-5).
+// Reset resets the worktree to a previous target checkpoint SHA (WKT-5).
+// It rolls back both tracked modifications (`git reset --hard`) and untracked files (`git clean -fd`).
 func (m *Manager) Reset(ctx context.Context, worktreePath, targetSHA string) error {
 	if targetSHA == "" {
 		targetSHA = "HEAD"
 	}
 
+	// Discard tracked changes back to target commit
 	resetCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "reset", "--hard", targetSHA)
 	if out, err := resetCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("worktree: reset --hard: %s: %w", string(out), err)
 	}
 
+	// Delete untracked files and directories created during the failed attempt
 	cleanCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "clean", "-fd")
 	if out, err := cleanCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("worktree: clean -fd: %s: %w", string(out), err)
@@ -177,22 +216,26 @@ func (m *Manager) Reset(ctx context.Context, worktreePath, targetSHA string) err
 	return nil
 }
 
-// Remove removes the worktree and prunes worktree metadata (WKT-4, WKT-6, WKT-9).
+// Remove cleanly unregisters and deletes the worktree from disk (WKT-4, WKT-6, WKT-9).
+// It also prunes stale worktree administrative metadata from `.git/worktrees/`.
 func (m *Manager) Remove(ctx context.Context, repoPath, worktreePath, branchName string, deleteBranch bool) error {
+	// Serialize against other worktree operations on the same repository
 	lock := m.getProjectLock(repoPath)
 	lock.Lock()
 	defer lock.Unlock()
 
-	// Remove worktree
+	// 1. Unregister and delete worktree directory
 	if _, err := os.Stat(worktreePath); err == nil {
 		removeCmd := exec.CommandContext(ctx, "git", "-C", repoPath, "worktree", "remove", "--force", worktreePath)
 		_ = removeCmd.Run()
 		_ = os.RemoveAll(worktreePath)
 	}
 
+	// 2. Prune git internal worktree tracking records
 	pruneCmd := exec.CommandContext(ctx, "git", "-C", repoPath, "worktree", "prune")
 	_ = pruneCmd.Run()
 
+	// 3. Optionally delete the job branch
 	if deleteBranch && branchName != "" {
 		delBranchCmd := exec.CommandContext(ctx, "git", "-C", repoPath, "branch", "-D", branchName)
 		_ = delBranchCmd.Run()
@@ -201,8 +244,10 @@ func (m *Manager) Remove(ctx context.Context, repoPath, worktreePath, branchName
 	return nil
 }
 
-// Diff returns the git diff from the merge-base of baseSHA and HEAD (WKT-3).
+// Diff returns the git diff output from the merge-base of baseSHA and HEAD (WKT-3).
+// This accurately reflects all modifications introduced by the job.
 func (m *Manager) Diff(ctx context.Context, worktreePath, baseSHA string) (string, error) {
+	// Find the common ancestor commit
 	mbCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "merge-base", baseSHA, "HEAD")
 	mbOut, err := mbCmd.Output()
 	if err != nil {
@@ -210,6 +255,7 @@ func (m *Manager) Diff(ctx context.Context, worktreePath, baseSHA string) (strin
 	}
 	mergeBase := strings.TrimSpace(string(mbOut))
 
+	// Compute diff between merge base and current HEAD
 	diffCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", mergeBase, "HEAD")
 	diffOut, err := diffCmd.Output()
 	if err != nil {
@@ -219,7 +265,7 @@ func (m *Manager) Diff(ctx context.Context, worktreePath, baseSHA string) (strin
 	return string(diffOut), nil
 }
 
-// HeadSHA returns the current HEAD SHA of the worktree.
+// HeadSHA returns the commit hash of the current HEAD in the worktree.
 func (m *Manager) HeadSHA(ctx context.Context, worktreePath string) (string, error) {
 	shaCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "HEAD")
 	out, err := shaCmd.Output()

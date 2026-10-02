@@ -1,3 +1,16 @@
+// Package store implements repository data access for gate approvals.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & REPOSITORY PATTERN:
+// Human Approval Audit Records (APR-5..7).
+//
+// Whenever an engineer approves or rejects a job at a gate (e.g. spec review or final
+// approval before delivery), an immutable `Approval` record is persisted containing:
+// - `gate`: Gate identifier ("spec_review" or "final")
+// - `decision`: "approve" or "reject"
+// - `note`: Mandatory reason on rejection
+// - `head_sha`: Commit SHA at time of decision (stale evidence protection)
+// ==============================================================================
 package store
 
 import (

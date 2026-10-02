@@ -1,3 +1,18 @@
+// Package server implements job management and pipeline lifecycle REST APIs.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & REST ENDPOINTS:
+// Job Intake, Lifecycle Control & Human Gate Operations (INT-1, PIP-6, PIP-7, APR-5..7).
+//
+// Endpoints:
+// - `GET  /api/jobs`              : Lists jobs with query filters (status, stage, project).
+// - `POST /api/jobs`              : Submits a new job into the queue (INT-1).
+// - `GET  /api/jobs/{id}`         : Fetches job state and metadata.
+// - `POST /api/jobs/{id}/approve` : Human sign-off at gate (APR-5, APR-7).
+// - `POST /api/jobs/{id}/reject`  : Human rejection with mandatory note (APR-6, APR-7).
+// - `POST /api/jobs/{id}/cancel`  : Cancels an active job (PIP-6).
+// - `POST /api/jobs/{id}/retry`   : Retries a failed/interrupted job (PIP-7).
+// ==============================================================================
 package server
 
 import (
@@ -27,10 +42,11 @@ type rejectJobRequest struct {
 	Note string `json:"note"`
 }
 
-// handleListJobs handles GET /api/jobs.
+// handleListJobs handles GET /api/jobs with optional query parameter filters.
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	var filter store.JobListFilter
 
+	// Parse query parameters
 	if pIDStr := r.URL.Query().Get("project_id"); pIDStr != "" {
 		if pID, err := strconv.ParseInt(pIDStr, 10, 64); err == nil {
 			filter.ProjectID = &pID
@@ -62,6 +78,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateJob handles POST /api/jobs (INT-1).
+// Submits a new job into the queue and notifies the scheduler.
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	var req createJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -81,7 +98,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		req.WorkType = store.WorkTypeRefactor
 	}
 
-	// Verify project exists
+	// Verify target project exists
 	project, err := s.DB.Projects().GetProject(r.Context(), req.ProjectID)
 	if err != nil || project == nil {
 		http.Error(w, "Project not found", http.StatusBadRequest)
@@ -103,7 +120,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Wake scheduler if configured
+	// Reactively wake scheduler to admit job immediately if concurrency slots are open
 	if s.Scheduler != nil {
 		s.Scheduler.Wake()
 	}
@@ -137,6 +154,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleApproveJob handles POST /api/jobs/{id}/approve (APR-5, APR-7, SEC-4).
+// Restricted to interactive browser session cookies.
 func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -153,9 +171,10 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Execute engine approval with stale evidence verification
 	if err := s.Engine.Approve(r.Context(), id, req.HeadSHA); err != nil {
 		if errors.Is(err, factory.ErrStaleEvidence) {
-			http.Error(w, "409 stale_evidence", http.StatusConflict)
+			http.Error(w, "409 stale_evidence", http.StatusConflict) // 409 Conflict (APR-5)
 			return
 		}
 		if errors.Is(err, factory.ErrInvalidState) {
@@ -172,6 +191,7 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRejectJob handles POST /api/jobs/{id}/reject (APR-6, APR-7, SEC-4).
+// Rejection note is mandatory and returns 422 if omitted.
 func (s *Server) handleRejectJob(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -186,8 +206,9 @@ func (s *Server) handleRejectJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate rejection note presence (APR-6)
 	if req.Note == "" {
-		http.Error(w, "Rejection note cannot be empty", http.StatusUnprocessableEntity) // 422 (APR-6)
+		http.Error(w, "Rejection note cannot be empty", http.StatusUnprocessableEntity) // 422 Unprocessable Entity
 		return
 	}
 

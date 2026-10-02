@@ -1,3 +1,17 @@
+// Package command_test contains unit tests for the subprocess command runner.
+//
+// ==============================================================================
+// GO TESTING CONCEPTS:
+//
+//  1. Testing Process Execution:
+//     Verifies that shell commands execute with stdout/stderr separation, exit code
+//     capture, and timestamped streaming log outputs.
+//
+//  2. Manipulating and Restoring OS Environment in Tests:
+//     When modifying process-wide state like environment variables with `os.Setenv`,
+//     always use `defer os.Unsetenv(...)` to avoid contaminating other concurrent tests.
+//
+// ==============================================================================
 package command_test
 
 import (
@@ -10,6 +24,9 @@ import (
 	"github.com/garagefab/garagefab/internal/worker/command"
 )
 
+// TestCommandRunner_Run_And_Log_LOG2 tests requirements:
+// - LOG-2: Command outputs are written to the log file with timestamped [stdout] and [stderr] tags.
+// - RCV-1: Process startup callback receives valid PID and PGID values.
 func TestCommandRunner_Run_And_Log_LOG2(t *testing.T) {
 	runner := command.NewRunner()
 	tmpDir := t.TempDir()
@@ -18,6 +35,7 @@ func TestCommandRunner_Run_And_Log_LOG2(t *testing.T) {
 	var startedPID, startedPGID int
 	var startedTime int64
 
+	// Execute shell command that writes to both stdout and stderr
 	res, err := runner.Run(context.Background(), command.RunOptions{
 		WorkDir: tmpDir,
 		Command: "echo 'hello stdout' && echo 'hello stderr' >&2",
@@ -42,7 +60,7 @@ func TestCommandRunner_Run_And_Log_LOG2(t *testing.T) {
 		t.Errorf("expected stderr to contain 'hello stderr', got: %s", res.Stderr)
 	}
 
-	// Verify RCV-1 callback values
+	// Verify RCV-1: callback received positive PID and PGID
 	if startedPID <= 0 || startedPGID <= 0 || startedTime <= 0 {
 		t.Errorf("expected positive pid/pgid/time, got pid=%d, pgid=%d, time=%d", startedPID, startedPGID, startedTime)
 	}
@@ -61,11 +79,14 @@ func TestCommandRunner_Run_And_Log_LOG2(t *testing.T) {
 	}
 }
 
+// TestSanitizeEnv_SEC6 verifies requirement SEC-6:
+// Sensitive environment variables (containing TOKEN, SECRET, KEY, PASSWORD) are stripped.
 func TestSanitizeEnv_SEC6(t *testing.T) {
-	// Set mock environment variables
+	// Inject simulated sensitive environment variables into test process
 	os.Setenv("GARAGEFAB_API_TOKEN", "super-secret-token")
 	os.Setenv("GITHUB_TOKEN", "ghp_secret")
 	os.Setenv("AWS_SECRET_KEY", "aws-secret")
+	// Clean up environment variables when test finishes
 	defer func() {
 		os.Unsetenv("GARAGEFAB_API_TOKEN")
 		os.Unsetenv("GITHUB_TOKEN")
@@ -79,6 +100,7 @@ func TestSanitizeEnv_SEC6(t *testing.T) {
 
 	sanitized := command.SanitizeEnv(custom)
 
+	// Verify no secrets leaked into sanitized environment slice
 	for _, entry := range sanitized {
 		if strings.Contains(entry, "super-secret-token") ||
 			strings.Contains(entry, "GARAGEFAB") ||
@@ -89,7 +111,7 @@ func TestSanitizeEnv_SEC6(t *testing.T) {
 		}
 	}
 
-	// Custom non-secret var should be preserved
+	// Verify benign custom variables are retained
 	foundCustom := false
 	for _, entry := range sanitized {
 		if entry == "MY_CUSTOM_VAR=value123" {

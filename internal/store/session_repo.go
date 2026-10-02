@@ -1,3 +1,19 @@
+// Package store implements repository data access for web dashboard sessions.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & SECURITY:
+// Dashboard Session Management & Token Exchange (SEC-3).
+//
+// To allow seamless dashboard access without exposing raw API tokens in frontend JavaScript:
+// 1. The dashboard exchanges the API token via `POST /api/session` for a secure session cookie (`gf_session`).
+// 2. The session record stores:
+//   - `id`: Cryptographically secure random session ID (UUID or random hex string).
+//   - `token_hash`: SHA-256 hash of the API token used to mint the session.
+//   - `expires_at`: Expiration timestamp.
+//     3. When the API token is rotated in `config.yaml`, `DeleteAllSessions()` invalidates all
+//     active web sessions immediately (SEC-3).
+//
+// ==============================================================================
 package store
 
 import (
@@ -29,14 +45,14 @@ func (r *SessionRepo) CreateSession(ctx context.Context, s *Session) error {
 	return nil
 }
 
-// GetSession retrieves a session by ID.
+// GetSession retrieves a session by its unique session ID.
 func (r *SessionRepo) GetSession(ctx context.Context, id string) (*Session, error) {
 	query := `SELECT id, token_hash, expires_at, created_at FROM sessions WHERE id = ?`
 	row := r.q.QueryRowContext(ctx, query, id)
 	return scanSession(row)
 }
 
-// DeleteSession deletes a session by ID (e.g. logout).
+// DeleteSession deletes a single session by ID (e.g. user logout).
 func (r *SessionRepo) DeleteSession(ctx context.Context, id string) error {
 	query := `DELETE FROM sessions WHERE id = ?`
 	_, err := r.q.ExecContext(ctx, query, id)
@@ -46,7 +62,7 @@ func (r *SessionRepo) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
-// DeleteExpiredSessions cleans up sessions whose expires_at is before now.
+// DeleteExpiredSessions cleans up sessions whose expires_at is in the past.
 func (r *SessionRepo) DeleteExpiredSessions(ctx context.Context) error {
 	nowStr := formatTime(time.Now().UTC())
 	query := `DELETE FROM sessions WHERE expires_at < ?`
@@ -57,7 +73,7 @@ func (r *SessionRepo) DeleteExpiredSessions(ctx context.Context) error {
 	return nil
 }
 
-// DeleteAllSessions invalidates all sessions when the API token is rotated (SEC-3).
+// DeleteAllSessions invalidates all sessions across the database when the API token is rotated (SEC-3).
 func (r *SessionRepo) DeleteAllSessions(ctx context.Context) error {
 	query := `DELETE FROM sessions`
 	_, err := r.q.ExecContext(ctx, query)

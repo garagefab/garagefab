@@ -1,3 +1,19 @@
+// Package config_test contains unit tests for configuration loading and validation.
+//
+// ==============================================================================
+// GO TESTING CONCEPTS & LOGGING CAPTURE:
+//
+//  1. Testing File Permissions (`os.Stat` and `info.Mode().Perm()`):
+//     Go provides direct access to POSIX permission bits via `os.FileMode`.
+//     Using `%#o` formatting prints octal notation (e.g., 0700 or 0600).
+//
+//  2. Intercepting Structured Logs in Unit Tests:
+//     In Java/Logback, testing log output often requires custom appenders or ListAppender.
+//     In Go with `log/slog`, we can plug a `bytes.Buffer` into `slog.NewTextHandler`
+//     and replace the default logger with `slog.SetDefault`.
+//     Using `defer slog.SetDefault(origLogger)` ensures the logger is restored after the test.
+//
+// ==============================================================================
 package config_test
 
 import (
@@ -11,6 +27,9 @@ import (
 	"github.com/garagefab/garagefab/internal/config"
 )
 
+// TestLoad_NewDataDir_CLI6 verifies requirement CLI-6:
+// If Garagefab is started with a non-existent data directory, it initializes the directory
+// with mode 0700, generates a config.yaml with mode 0600, and sets a 64-character hex API token.
 func TestLoad_NewDataDir_CLI6(t *testing.T) {
 	tempParent := t.TempDir()
 	dataDir := filepath.Join(tempParent, "nonexistent-dir")
@@ -20,7 +39,7 @@ func TestLoad_NewDataDir_CLI6(t *testing.T) {
 		t.Fatalf("Load returned unexpected error: %v", err)
 	}
 
-	// Verify directory mode is 0700
+	// Verify directory permissions: mode 0700 (owner only)
 	info, err := os.Stat(dataDir)
 	if err != nil {
 		t.Fatalf("failed to stat dataDir: %v", err)
@@ -29,7 +48,7 @@ func TestLoad_NewDataDir_CLI6(t *testing.T) {
 		t.Errorf("expected directory mode 0700, got %#o", mode)
 	}
 
-	// Verify config.yaml exists and mode is 0600
+	// Verify config file permissions: mode 0600 (owner read/write only)
 	configFile := filepath.Join(dataDir, "config.yaml")
 	fileInfo, err := os.Stat(configFile)
 	if err != nil {
@@ -39,10 +58,11 @@ func TestLoad_NewDataDir_CLI6(t *testing.T) {
 		t.Errorf("expected config file mode 0600, got %#o", mode)
 	}
 
-	// Verify defaults
+	// Verify default configuration properties
 	if cfg.Server.Listen != "127.0.0.1:7878" {
 		t.Errorf("expected Server.Listen '127.0.0.1:7878', got %q", cfg.Server.Listen)
 	}
+	// 32 random bytes hex-encoded = 64 hexadecimal characters
 	if len(cfg.Server.APIToken) != 64 {
 		t.Errorf("expected generated APIToken to be 64 hex chars, got len %d: %q", len(cfg.Server.APIToken), cfg.Server.APIToken)
 	}
@@ -60,6 +80,8 @@ func TestLoad_NewDataDir_CLI6(t *testing.T) {
 	}
 }
 
+// TestLoad_NonLoopbackListen_Rejected verifies requirement SEC-1:
+// Binding to non-loopback interfaces (e.g. 0.0.0.0) is rejected for security.
 func TestLoad_NonLoopbackListen_Rejected(t *testing.T) {
 	dataDir := t.TempDir()
 	configFile := filepath.Join(dataDir, "config.yaml")
@@ -81,6 +103,7 @@ server:
 	}
 }
 
+// TestLoad_EmptyAPIToken_Rejected verifies that a blank API token fails validation.
 func TestLoad_EmptyAPIToken_Rejected(t *testing.T) {
 	dataDir := t.TempDir()
 	configFile := filepath.Join(dataDir, "config.yaml")
@@ -102,6 +125,8 @@ server:
 	}
 }
 
+// TestLoad_InsecurePermissions_SEC7 verifies requirement SEC-7:
+// If config files have permissions that are too permissive, a warning log is emitted.
 func TestLoad_InsecurePermissions_SEC7(t *testing.T) {
 	tempParent := t.TempDir()
 	dataDir := filepath.Join(tempParent, "insecure-dir")
@@ -118,12 +143,12 @@ server:
 		t.Fatalf("failed to write config.yaml: %v", err)
 	}
 
-	// Capture slog output to verify warning
+	// Capture slog warning output into an in-memory buffer
 	var logBuf bytes.Buffer
 	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
 	origLogger := slog.Default()
 	slog.SetDefault(slog.New(handler))
-	defer slog.SetDefault(origLogger)
+	defer slog.SetDefault(origLogger) // Ensure logger is restored after test ends
 
 	cfg, err := config.Load(dataDir)
 	if err != nil {

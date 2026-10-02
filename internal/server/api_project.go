@@ -1,3 +1,27 @@
+// Package server implements project management REST APIs.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & REST ENDPOINTS:
+// Project Registration & Repository Validation (PRJ-1..5).
+//
+// Endpoints:
+// - `GET  /api/projects`     : Lists all active registered projects.
+// - `POST /api/projects`     : Registers a new local Git repository (PRJ-1..5).
+// - `GET  /api/projects/{id}`: Retrieves details for a specific project.
+//
+// GO CONCEPTS & JAVA / SPRING COMPARISONS:
+//
+//  1. JSON Request Decoding & Response Streaming:
+//     In Spring Boot: `@RequestBody CreateProjectDTO dto` is deserialized automatically by Jackson.
+//     In Go: We stream directly from the HTTP request body via `json.NewDecoder(r.Body).Decode(&req)`.
+//     Responses are written directly via `json.NewEncoder(w).Encode(p)`.
+//
+//  2. URL Path Parameter Extraction:
+//     Chi provides `chi.URLParam(r, "id")` (equivalent to Spring's `@PathVariable("id")`).
+//     Since all path parameters are strings in HTTP, `strconv.ParseInt(idStr, 10, 64)` converts
+//     it to an int64 with explicit error handling.
+//
+// ==============================================================================
 package server
 
 import (
@@ -13,6 +37,7 @@ import (
 	"github.com/garagefab/garagefab/internal/store"
 )
 
+// createProjectRequest defines the JSON payload for registering a project.
 type createProjectRequest struct {
 	Name             string   `json:"name"`
 	RepoPath         string   `json:"repo_path"`
@@ -27,6 +52,7 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to list projects", http.StatusInternalServerError)
 		return
 	}
+	// Guarantee JSON array `[]` rather than `null` if empty
 	if projects == nil {
 		projects = []*store.Project{}
 	}
@@ -48,30 +74,33 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate repository path exists (PRJ-2)
+	// Validate repository path exists on disk (PRJ-2)
 	fi, err := os.Stat(req.RepoPath)
 	if err != nil || !fi.IsDir() {
 		http.Error(w, "Repository path does not exist", http.StatusBadRequest)
 		return
 	}
 
-	// Validate it is a git repository (PRJ-2)
+	// Validate path is a valid Git repository containing .git (PRJ-2)
 	gitDir := filepath.Join(req.RepoPath, ".git")
 	if _, err := os.Stat(gitDir); err != nil {
 		http.Error(w, "Path is not a valid Git repository (.git not found)", http.StatusBadRequest)
 		return
 	}
 
+	// Default project name to folder basename if omitted
 	name := req.Name
 	if name == "" {
 		name = filepath.Base(req.RepoPath)
 	}
 
+	// Default base branch to origin/main if omitted
 	baseRef := req.BaseRef
 	if baseRef == "" {
 		baseRef = "origin/main"
 	}
 
+	// Default to enabling all 4 work types if none specified
 	workTypes := req.EnabledWorkTypes
 	if len(workTypes) == 0 {
 		workTypes = []string{store.WorkTypeBugFix, store.WorkTypeFeature, store.WorkTypeRefactor, store.WorkTypeDocs}
@@ -86,11 +115,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.DB.Projects().CreateProject(r.Context(), p); err != nil {
 		if errors.Is(err, store.ErrProjectNameExists) {
-			http.Error(w, "Project with this name already exists", http.StatusConflict)
+			http.Error(w, "Project with this name already exists", http.StatusConflict) // 409 Conflict
 			return
 		}
 		if errors.Is(err, store.ErrProjectRepoPathExists) {
-			http.Error(w, "Project with this repository path already exists", http.StatusConflict)
+			http.Error(w, "Project with this repository path already exists", http.StatusConflict) // 409 Conflict
 			return
 		}
 		http.Error(w, "Failed to create project", http.StatusInternalServerError)
@@ -98,7 +127,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(http.StatusCreated) // 201 Created
 	_ = json.NewEncoder(w).Encode(p)
 }
 

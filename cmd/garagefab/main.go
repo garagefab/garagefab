@@ -1,3 +1,9 @@
+// Package main is the entry point and dependency-injection wiring root for the Garagefab binary.
+//
+// In Clean / Hexagonal Architecture, this package serves as the "Composition Root"
+// (equivalent to Spring Boot's Application.java and configuration classes in Java).
+// It is the ONLY place in the codebase that knows about concrete implementations across all
+// packages (config, store, worker, factory, server) and connects them together.
 package main
 
 import (
@@ -27,23 +33,32 @@ import (
 	"github.com/garagefab/garagefab/internal/worker/worktree"
 )
 
+// Command-line flag variables.
+// In Go, flags are bound to package-level variables during package initialization (init()).
 var (
-	dataDirFlag string
-	portFlag    int
-	noOpenFlag  bool
+	dataDirFlag string // Custom data directory path (defaults to ~/.garagefab)
+	portFlag    int    // Custom port override (defaults to 7878 or config.yaml)
+	noOpenFlag  bool   // If true, prevents automatic browser launch on startup
 )
 
+// main is the application entry point (equivalent to public static void main in Java).
+// Its sole responsibility is executing the root Cobra command tree and exiting with
+// code 1 if an error is returned.
 func main() {
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
+// rootCmd represents the base CLI command ("garagefab").
+// Cobra uses a command-tree structure: subcommands (start, version, status) are attached to rootCmd.
 var rootCmd = &cobra.Command{
 	Use:   "garagefab",
 	Short: "Garagefab: a lightweight software factory for solo developers",
 }
 
+// versionCmd implements the "garagefab version" CLI command (spec CLI-5).
+// It prints the version, git commit SHA, and UTC build timestamp injected at compile time via -ldflags.
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version, commit, and build date",
@@ -52,21 +67,34 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+// startCmd implements the "garagefab start" CLI command (spec CLI-1).
+// It executes the full factory bootstrap:
+//  1. Load or auto-generate configuration and API token (CLI-6)
+//  2. Run environment pre-flight checks: Git version & port availability (CLI-7)
+//  3. Acquire single-instance process lock (RCV-5)
+//  4. Open SQLite database and apply Goose schema migrations
+//  5. Wire worker, factory, and scheduler components (Hexagonal adapters)
+//  6. Start HTTP server and serve embedded React UI (server)
+//  7. Open browser dashboard unless --no-open is specified
+//  8. Block until SIGINT/SIGTERM, then perform graceful shutdown within 5 seconds
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the Garagefab factory service and web dashboard",
 	Run: func(cmd *cobra.Command, args []string) {
+		// 1. Load configuration. On first run, config.Load creates ~/.garagefab,
+		// generates a cryptographically secure 64-char API token, and writes config.yaml (0600 mode).
 		cfg, err := config.Load(dataDirFlag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
 			os.Exit(1)
 		}
 
+		// Allow CLI --port flag to override the port specified in config.yaml.
 		if portFlag > 0 {
 			cfg.Server.Listen = fmt.Sprintf("127.0.0.1:%d", portFlag)
 		}
 
-		// Startup checks (CLI-7)
+		// 2. Pre-flight startup checks (spec CLI-7). Fail-fast before acquiring locks or touching DB.
 		if err := checkGitAvailable(); err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
@@ -77,19 +105,22 @@ var startCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Single-instance lock (RCV-5)
+		// 3. Single-instance process lock (spec RCV-5).
+		// Uses an OS file lock (flock) to prevent two garagefab instances from accessing the same data dir.
 		lock, err := config.AcquireLock(cfg.DataDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
+		// 'defer' in Go functions like Java's try-finally: this cleanup runs whenever startCmd exits.
 		defer func() {
 			if err := lock.Release(); err != nil {
 				slog.Error("failed to release lock", "error", err)
 			}
 		}()
 
-		// Store & migrations (T4)
+		// 4. Persistence Layer (SQLite + Goose migrations).
+		// Opens SQLite with WAL mode, single writer, and pooled readers.
 		dbPath := filepath.Join(cfg.DataDir, "garagefab.db")
 		db, err := store.Open(dbPath)
 		if err != nil {
@@ -98,7 +129,9 @@ var startCmd = &cobra.Command{
 		}
 		defer db.Close()
 
-		// Worker, Factory, and Scheduler (M1)
+		// 5. Dependency Injection / Wiring (Hexagonal Architecture).
+		// 'factory' defines interfaces (ports) and cannot import 'store' or 'worker' directly.
+		// These adapters bridge the concrete implementations to the factory's interfaces.
 		storeAdapter := newFactoryStoreAdapter(db)
 		wtMgr := newFactoryWorktreeAdapter(worktree.NewManager(filepath.Join(cfg.DataDir, "worktrees")))
 		fakeAgent := newFactoryAgentAdapter(agent.NewFakeRunner())
@@ -106,11 +139,13 @@ var startCmd = &cobra.Command{
 		engine := factory.NewEngine(storeAdapter, wtMgr, fakeAgent, cmdRunner, filepath.Join(cfg.DataDir, "logs"))
 		scheduler := factory.NewScheduler(storeAdapter, engine, cfg.Engine.MaxConcurrentJobs)
 
+		// Start the job scheduler in a background goroutine (lightweight async thread in Go).
 		schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
 		defer cancelScheduler()
 		go scheduler.Start(schedulerCtx)
 
-		// Server (T4)
+		// 6. HTTP Server & Embedded UI.
+		// garagefab.Dist() provides the in-memory React SPA files embedded at compile time via //go:embed.
 		srv := server.NewServer(cfg, db, engine, scheduler, garagefab.Dist())
 		go func() {
 			if err := srv.Start(cfg.Server.Listen); err != nil && err != http.ErrServerClosed {
@@ -118,21 +153,27 @@ var startCmd = &cobra.Command{
 			}
 		}()
 
+		// Display connection details to the user.
 		_, port, _ := net.SplitHostPort(cfg.Server.Listen)
 		dashboardURL := fmt.Sprintf("http://127.0.0.1:%s/login#token=%s", port, cfg.Server.APIToken)
 		fmt.Printf("Garagefab server listening on %s\n", cfg.Server.Listen)
 		fmt.Printf("Dashboard login URL: %s\n", dashboardURL)
 
+		// 7. Automatically open the default web browser unless the user passed --no-open.
 		if !noOpenFlag {
 			openBrowser(dashboardURL)
 		}
 
-		// Graceful shutdown handling
+		// 8. Graceful shutdown handler.
+		// In Go, channels (chan) are used to receive OS signals.
+		// signal.Notify redirects SIGINT (Ctrl+C) and SIGTERM (kill) into sigCh.
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-		<-sigCh
+		<-sigCh // Blocks execution here until a termination signal is received!
+
 		fmt.Println("\nShutting down gracefully...")
 
+		// Allow active HTTP requests up to 5 seconds to complete cleanly before terminating.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
@@ -141,6 +182,8 @@ var startCmd = &cobra.Command{
 	},
 }
 
+// openBrowser launches the system default web browser with the target URL.
+// It executes OS-native launcher commands ('open' on macOS, 'xdg-open' on Linux).
 func openBrowser(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -151,9 +194,12 @@ func openBrowser(url string) {
 	default:
 		return
 	}
-	_ = cmd.Start()
+	_ = cmd.Start() // Fire-and-forget: do not block the server waiting for the browser process.
 }
 
+// init is a special Go runtime function that executes automatically before main().
+// It is equivalent to a static { ... } initializer block in Java.
+// Here, it binds command-line flags and registers child commands (version, start) onto rootCmd.
 func init() {
 	rootCmd.PersistentFlags().StringVar(&dataDirFlag, "data-dir", "", "path to data directory (defaults to ~/.garagefab)")
 	startCmd.Flags().IntVar(&portFlag, "port", 0, "port to listen on (defaults to 7878 or value in config.yaml)")

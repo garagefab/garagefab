@@ -1,3 +1,19 @@
+// Package store implements repository data access for operating system process records.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & CRASH RECOVERY:
+// Process Tracking & Orphan Termination (RCV-1, RCV-2).
+//
+// When Garagefab executes an external agent or shell command subprocess:
+//  1. Immediately after OS process fork (`cmd.Start()`), the process PID, PGID, and
+//     start timestamp are saved to `process_records` with `active = 1`.
+//  2. If Garagefab terminates normally, it marks the record `active = 0`.
+//  3. If Garagefab crashes, loses power, or is killed via SIGKILL:
+//     Upon the next startup, the recovery system calls `ListActiveProcessRecords()`
+//     and sends `SIGTERM/SIGKILL` to the entire process group (`-pgid`), ensuring no
+//     orphaned compiler, test runner, or LLM processes linger in the background.
+//
+// ==============================================================================
 package store
 
 import (
@@ -42,7 +58,7 @@ func (r *ProcessRecordRepo) CreateProcessRecord(ctx context.Context, rec *Proces
 	return nil
 }
 
-// GetProcessRecord retrieves a process record by ID.
+// GetProcessRecord retrieves a process record by primary key ID.
 func (r *ProcessRecordRepo) GetProcessRecord(ctx context.Context, id int64) (*ProcessRecord, error) {
 	query := `SELECT id, step_run_id, pid, pgid, start_time, active, created_at FROM process_records WHERE id = ?`
 	row := r.q.QueryRowContext(ctx, query, id)
@@ -50,6 +66,7 @@ func (r *ProcessRecordRepo) GetProcessRecord(ctx context.Context, id int64) (*Pr
 }
 
 // ListActiveProcessRecords returns all process records currently marked as active (RCV-2).
+// Used on daemon startup to detect and kill processes orphaned by an unexpected crash.
 func (r *ProcessRecordRepo) ListActiveProcessRecords(ctx context.Context) ([]*ProcessRecord, error) {
 	query := `
 		SELECT id, step_run_id, pid, pgid, start_time, active, created_at
@@ -79,7 +96,7 @@ func (r *ProcessRecordRepo) ListActiveProcessRecords(ctx context.Context) ([]*Pr
 	return records, nil
 }
 
-// MarkProcessInactive updates a process record to inactive upon normal termination.
+// MarkProcessInactive updates a process record to inactive upon normal process exit.
 func (r *ProcessRecordRepo) MarkProcessInactive(ctx context.Context, id int64) error {
 	query := `UPDATE process_records SET active = 0 WHERE id = ?`
 	res, err := r.q.ExecContext(ctx, query, id)

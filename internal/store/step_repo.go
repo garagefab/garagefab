@@ -1,3 +1,22 @@
+// Package store implements repository data access for pipeline step runs.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & REPOSITORY PATTERN:
+// Step Run Audit Trail (LOG-1, LOG-2).
+//
+// Every stage execution (e.g. coding attempt, review execution) records a `StepRun`
+// with start/end timestamps, exit codes, and log paths.
+//
+// GO CONCEPTS & SQL NULL HANDLING:
+//
+//  1. Handling NULL Columns (`sql.NullString` vs Pointers):
+//     In SQL, columns like `ended_at` or `exit_code` are NULL while a step is running.
+//     In Go:
+//     - For parameters: Pass `*time.Time` or `*int` directly. `database/sql` converts `nil` to SQL `NULL`.
+//     - For scanning: Using `sql.NullString` or `sql.NullInt64` avoids errors when scanning
+//     nullable database columns into Go variables.
+//
+// ==============================================================================
 package store
 
 import (
@@ -57,7 +76,7 @@ func (r *StepRunRepo) CreateStepRun(ctx context.Context, s *StepRun) error {
 	return nil
 }
 
-// GetStepRun retrieves a step run by ID.
+// GetStepRun retrieves a step run by its primary key ID.
 func (r *StepRunRepo) GetStepRun(ctx context.Context, id int64) (*StepRun, error) {
 	query := `
 		SELECT id, job_id, stage, kind, attempt, executor, status,
@@ -69,7 +88,7 @@ func (r *StepRunRepo) GetStepRun(ctx context.Context, id int64) (*StepRun, error
 	return scanStepRun(row)
 }
 
-// UpdateStepRun updates status, failure_category, exit_code, and ended_at of a step run.
+// UpdateStepRun updates status, failure_category, exit_code, and ended_at of an existing step run.
 func (r *StepRunRepo) UpdateStepRun(ctx context.Context, s *StepRun) error {
 	query := `
 		UPDATE step_runs
@@ -101,7 +120,7 @@ func (r *StepRunRepo) UpdateStepRun(ctx context.Context, s *StepRun) error {
 	return nil
 }
 
-// ListStepRunsByJob retrieves all step runs for a job, ordered by attempt and start time.
+// ListStepRunsByJob retrieves all step runs for a job, ordered chronologically.
 func (r *StepRunRepo) ListStepRunsByJob(ctx context.Context, jobID int64) ([]*StepRun, error) {
 	query := `
 		SELECT id, job_id, stage, kind, attempt, executor, status,
@@ -150,7 +169,7 @@ func scanStepRun(row rowScanner) (*StepRun, error) {
 	var (
 		s            StepRun
 		startedAtStr string
-		endedAtStr   sql.NullString
+		endedAtStr   sql.NullString // Safely handles NULL column in SQL
 	)
 
 	err := row.Scan(
@@ -175,6 +194,7 @@ func scanStepRun(row rowScanner) (*StepRun, error) {
 	}
 
 	s.StartedAt = parseTime(startedAtStr)
+	// If endedAtStr is not NULL in database, parse into time pointer
 	if endedAtStr.Valid && endedAtStr.String != "" {
 		t := parseTime(endedAtStr.String)
 		s.EndedAt = &t

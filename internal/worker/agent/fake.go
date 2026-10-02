@@ -1,3 +1,28 @@
+// Package agent provides concrete and test implementations of AI agent runners.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & PATTERNS:
+// Test Double (Fake Object Pattern) — Walking Skeleton Enabler.
+//
+// `FakeRunner` simulates realistic AI agent executions for testing and for the
+// Walking Skeleton (Milestone 1). Without needing real LLM API keys or CLI installations,
+// `FakeRunner` exercises the entire pipeline: creating code files, generating structured
+// `review.json` artifacts, handling log files, and triggering callbacks.
+//
+// GO CONCEPTS & JAVA COMPARISONS:
+//
+//  1. Channel Multiplexing with `select` vs Java Thread.sleep:
+//     In Java: Pausing an asynchronous task requires `Thread.sleep(ms)` and catching
+//     `InterruptedException`.
+//     In Go: We use a `select` statement listening to two channels simultaneously:
+//     select {
+//     case <-ctx.Done():                // Wakes up if context is cancelled/timed out
+//     return nil, ctx.Err()
+//     case <-time.After(sleepDuration): // Wakes up when timer channel emits a timestamp
+//     }
+//     This guarantees instantaneous, cooperative cancellation without blocking operating system threads.
+//
+// ==============================================================================
 package agent
 
 import (
@@ -8,28 +33,31 @@ import (
 	"time"
 )
 
-// FakeRunner simulates agent executions for testing and M1 walking skeleton (COD-1/2/9, REV).
+// FakeRunner simulates agent executions for unit tests and the M1 walking skeleton (COD-1/2/9, REV).
+// It can be configured to succeed, fail, delay, or return specific review decisions.
 type FakeRunner struct {
-	FailCoding     bool
-	FailReview     bool
-	ReviewDecision string
-	CustomExitCode int
-	SleepDuration  time.Duration
+	FailCoding     bool          // If true, simulates a coding failure (exit code 1)
+	FailReview     bool          // If true, produces a "request_changes" review decision
+	ReviewDecision string        // Overrides default review decision ("approve" vs "request_changes")
+	CustomExitCode int           // Simulates arbitrary non-zero process exit codes
+	SleepDuration  time.Duration // Simulates long-running agent work for concurrency testing
 }
 
-// NewFakeRunner returns a new FakeRunner with default passing behaviors.
+// NewFakeRunner returns a FakeRunner configured for the happy path (approves reviews).
 func NewFakeRunner() *FakeRunner {
 	return &FakeRunner{
 		ReviewDecision: "approve",
 	}
 }
 
-// Run executes the fake agent step according to the stage.
+// Run executes the fake agent step according to the stage specified in req.
 func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, error) {
+	// Trigger the startup callback so callers can record the simulated PID (RCV-1)
 	if req.OnProcessStart != nil {
 		req.OnProcessStart(os.Getpid(), os.Getpid(), time.Now().Unix())
 	}
 
+	// If configured with a delay, wait while respecting context cancellation
 	if f.SleepDuration > 0 {
 		select {
 		case <-ctx.Done():
@@ -38,7 +66,7 @@ func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, e
 		}
 	}
 
-	// Write log entries if LogPath is provided (LOG-2)
+	// Write log entries if a LogPath is specified (LOG-2)
 	if req.LogPath != "" {
 		_ = os.MkdirAll(filepath.Dir(req.LogPath), 0700)
 		logLine := fmt.Sprintf("[%s] [stdout] Fake agent started for job %d at stage %s\n",
@@ -46,6 +74,7 @@ func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, e
 		_ = os.WriteFile(req.LogPath, []byte(logLine), 0600)
 	}
 
+	// Return custom exit code if set for failure testing
 	if f.CustomExitCode != 0 {
 		return &AgentResult{
 			ExitCode: f.CustomExitCode,
@@ -53,6 +82,7 @@ func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, e
 		}, nil
 	}
 
+	// Stage-dependent simulation
 	switch req.Stage {
 	case "04_Coding":
 		if f.FailCoding {
@@ -62,7 +92,7 @@ func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, e
 			}, nil
 		}
 
-		// Simulate writing code to worktree (e.g. creating/modifying a file)
+		// Simulate the AI agent modifying code in the worktree
 		if req.WorktreePath != "" {
 			artifactDir := filepath.Join(req.WorktreePath, ".garagefab", "jobs", fmt.Sprintf("%d", req.JobID))
 			_ = os.MkdirAll(artifactDir, 0700)
@@ -85,7 +115,7 @@ func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, e
 			decision = "request_changes"
 		}
 
-		// Write review.json in .garagefab/jobs/<id>/ (spec §6.2)
+		// Write structured review.json adhering to spec §6.2
 		var reviewPath string
 		if req.WorktreePath != "" {
 			artifactDir := filepath.Join(req.WorktreePath, ".garagefab", "jobs", fmt.Sprintf("%d", req.JobID))
@@ -118,6 +148,7 @@ func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, e
 		}, nil
 
 	default:
+		// Default fallback for any other stages
 		return &AgentResult{
 			ExitCode: 0,
 			Summary:  fmt.Sprintf("Fake agent completed stage %s", req.Stage),

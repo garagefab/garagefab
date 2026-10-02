@@ -1,3 +1,30 @@
+// Package main contains full end-to-end integration tests for Garagefab.
+//
+// ==============================================================================
+// GO TESTING CONCEPTS & ARCHITECTURAL PATTERNS:
+//
+//  1. `httptest` (In-Memory HTTP Testing):
+//     `net/http/httptest` is Go's standard package for testing HTTP handlers.
+//     - `httptest.NewRequest`: Creates an in-memory `http.Request`.
+//     - `httptest.NewRecorder`: Captures the response headers, status code, and body.
+//     - `srv.Router.ServeHTTP(w, req)`: Directly invokes the HTTP router without
+//     binding a real TCP port. This is fast, deterministic, and doesn't collide with
+//     other processes. (Equivalent to Spring's `MockMvc`).
+//
+// 2. Goroutines & Context Cancellation:
+//
+//   - `go scheduler.Start(schedulerCtx)`: Spawns the scheduler loop on a lightweight
+//     green thread (goroutine).
+//
+//   - `context.WithCancel`: Provides a cooperative cancellation mechanism. Calling
+//     `cancelScheduler()` signals the goroutine to exit cleanly when the test ends.
+//
+//     3. Test Fixture Helper (`t.Helper()`):
+//     Calling `t.Helper()` tells the Go test runner to ignore this function in stack
+//     traces. When an error occurs inside `createTestRepo`, Go reports the line number
+//     of the caller in `TestM1_WalkingSkeleton_E2E`, making failures much easier to debug.
+//
+// ==============================================================================
 package main
 
 import (
@@ -23,13 +50,17 @@ import (
 	"github.com/garagefab/garagefab/internal/worker/worktree"
 )
 
+// createTestRepo initializes a real Git repository in a temporary directory.
+// This represents the user's local code repository that Garagefab will manage.
 func createTestRepo(t *testing.T) string {
-	t.Helper()
+	t.Helper() // Marks this function as a test helper for accurate stack trace reporting
+
 	repoDir := filepath.Join(t.TempDir(), "e2e-repo")
 	if err := os.MkdirAll(repoDir, 0700); err != nil {
 		t.Fatalf("mkdir repoDir failed: %v", err)
 	}
 
+	// Helper to execute git commands inside the temporary repository
 	runGit := func(args ...string) {
 		cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -37,6 +68,7 @@ func createTestRepo(t *testing.T) string {
 		}
 	}
 
+	// Initialize git repository with main branch and dummy commit
 	runGit("init", "-b", "main")
 	runGit("config", "user.name", "Garagefab Test")
 	runGit("config", "user.email", "test@garagefab.local")
@@ -51,7 +83,7 @@ func createTestRepo(t *testing.T) string {
 	return repoDir
 }
 
-// TestM1_WalkingSkeleton_E2E validates the complete M1 exit criteria:
+// TestM1_WalkingSkeleton_E2E validates the complete Milestone 1 exit criteria:
 // 1. Registers a temporary Git repository via POST /api/projects
 // 2. Creates a refactor job via POST /api/jobs
 // 3. Scheduler admits job, executes coding & review with FakeAgent
@@ -65,6 +97,7 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 	cfg.DataDir = tempDataDir
 	cfg.Server.APIToken = "e2e-secret-token"
 
+	// 1. Initialize embedded SQLite database
 	dbPath := filepath.Join(tempDataDir, "garagefab.db")
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -72,7 +105,7 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Setup worker and factory components
+	// 2. Setup worker and factory components via adapters (IoC / Dependency Injection)
 	storeAdapter := newFactoryStoreAdapter(db)
 	worktreeBaseDir := filepath.Join(tempDataDir, "worktrees")
 	logBaseDir := filepath.Join(tempDataDir, "logs")
@@ -84,10 +117,12 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 	engine := factory.NewEngine(storeAdapter, wtMgr, fakeAgent, cmdRunner, logBaseDir)
 	scheduler := factory.NewScheduler(storeAdapter, engine, 2)
 
+	// Launch background scheduler goroutine with cancellable context
 	schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
 	defer cancelScheduler()
 	go scheduler.Start(schedulerCtx)
 
+	// Create HTTP server instance
 	srv := server.NewServer(cfg, db, engine, scheduler, nil)
 
 	// Step 1: Register temporary Git repository via POST /api/projects (PRJ-1..5)
@@ -136,7 +171,8 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 	}
 	jobID := int64(jobResp["id"].(float64))
 
-	// Step 3: Wait for job to progress through scheduler, coding, review, and reach awaiting_approval
+	// Step 3: Poll database until job progresses through scheduler, coding, review,
+	// and reaches the human approval gate (06_Human_Approval_Gate / awaiting_approval)
 	var finalJob *store.Job
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -154,12 +190,13 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 	}
 
 	// Step 4: Verify checkpoint commit is present (WKT-5, COD-9)
+	// The head commit of the worktree must be newer than the base commit.
 	if finalJob.HeadSHA == "" || finalJob.HeadSHA == finalJob.BaseSHA {
 		t.Errorf("expected HeadSHA to differ from BaseSHA due to checkpoint commit: HeadSHA=%s, BaseSHA=%s",
 			finalJob.HeadSHA, finalJob.BaseSHA)
 	}
 
-	// Step 5: Verify log files exist (LOG-2)
+	// Step 5: Verify stage log files exist on disk (LOG-2)
 	codingLog := filepath.Join(logBaseDir, fmt.Sprintf("%d", jobID), "step_coding.log")
 	if _, err := os.Stat(codingLog); os.IsNotExist(err) {
 		t.Errorf("expected coding log file at %s", codingLog)
@@ -170,13 +207,14 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 		t.Errorf("expected review log file at %s", reviewLog)
 	}
 
-	// Step 6: Verify events recorded (LOG-4)
+	// Step 6: Verify audit event log records state transitions in DB (LOG-4)
 	events, err := db.Events().ListEventsByJob(context.Background(), jobID)
 	if err != nil || len(events) < 3 {
 		t.Fatalf("expected at least 3 state transition events, got %d, err: %v", len(events), err)
 	}
 
 	// Step 7: Exchange API token for session cookie (SEC-3)
+	// Demonstrates that approval can authenticate via HTTP cookie rather than Bearer header.
 	reqSess := httptest.NewRequest(http.MethodPost, "/api/session", strings.NewReader("token=e2e-secret-token"))
 	reqSess.Host = "127.0.0.1:7878"
 	reqSess.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -199,6 +237,7 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 	}
 
 	// Step 8: Approve job via POST /api/jobs/{id}/approve (APR-5, APR-7)
+	// Validates HeadSHA matching to prevent approving stale changes.
 	approvePayload := fmt.Sprintf(`{"head_sha":%q}`, finalJob.HeadSHA)
 	approveURL := fmt.Sprintf("/api/jobs/%d/approve", jobID)
 	reqApprove := httptest.NewRequest(http.MethodPost, approveURL, strings.NewReader(approvePayload))
@@ -212,7 +251,7 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 		t.Fatalf("POST %s failed: %d: %s", approveURL, wApprove.Code, wApprove.Body.String())
 	}
 
-	// Step 9: Verify job is in terminal Done/done state (DLV-4)
+	// Step 9: Verify job reached terminal state: 07_Done / done (DLV-4)
 	doneJob, err := db.Jobs().GetJob(context.Background(), jobID)
 	if err != nil {
 		t.Fatalf("GetJob failed: %v", err)
@@ -221,12 +260,12 @@ func TestM1_WalkingSkeleton_E2E(t *testing.T) {
 		t.Errorf("expected 07_Done/done, got %s/%s", doneJob.Stage, doneJob.Status)
 	}
 
-	// Step 10: Verify worktree removed on delivery (DLV-4, WKT-6)
+	// Step 10: Verify worktree was cleanly deleted upon delivery (DLV-4, WKT-6)
 	if _, err := os.Stat(finalJob.WorktreePath); !os.IsNotExist(err) {
 		t.Errorf("expected worktree to be removed after completion, got err: %v", err)
 	}
 
-	// Step 11: Verify developer main checkout remains completely clean (WKT-4)
+	// Step 11: Verify developer's main working tree was never touched or dirtied (WKT-4)
 	cmdStatus := exec.Command("git", "-C", repoDir, "status", "--porcelain")
 	statusOut, err := cmdStatus.Output()
 	if err != nil || len(bytes.TrimSpace(statusOut)) > 0 {

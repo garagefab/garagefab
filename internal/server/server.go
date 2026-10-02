@@ -1,3 +1,35 @@
+// Package server implements the HTTP server, routing, middleware, REST APIs,
+// Server-Sent Events (SSE) hub, and embedded React SPA file serving.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & PATTERNS:
+// Primary / Inbound Adapter (Hexagonal Architecture).
+//
+// In Hexagonal Architecture:
+//   - `internal/server` is a "Driving / Inbound Adapter".
+//   - It receives incoming HTTP requests from browsers or CLI tools, validates inputs,
+//     and translates them into method calls on the domain core (`JobEngine`, `JobScheduler`)
+//     or queries against the read storage (`store.DB`).
+//   - It contains NO business pipeline logic (which lives entirely in `internal/factory`).
+//
+// GO CONCEPTS & JAVA / SPRING MVC COMPARISONS:
+//
+//  1. HTTP Routing with Chi (`go-chi/chi/v5`):
+//     In Spring Boot: You define `@RestController`, `@GetMapping`, and `@PostMapping`.
+//     In Go: Chi is a lightweight, idiomatic HTTP router that builds on Go's standard
+//     `net/http.Handler` interface without any reflection or bytecode proxies.
+//     Routes are grouped logically with `r.Route` and `r.Group`.
+//
+//  2. Middleware Pipelines:
+//     Go middleware functions wrap handlers: `func(http.Handler) http.Handler`.
+//     Equivalent to Java Servlet `Filter` or Spring `HandlerInterceptor`.
+//
+//  3. SPA Fallback (Single Page Application):
+//     If a user directly visits a frontend route like `/projects/1/jobs/2`, the server
+//     returns `index.html` with status 200, allowing React Router to render the page
+//     client-side. Unmatched API paths (`/api/...`) return JSON 404 instead.
+//
+// ==============================================================================
 package server
 
 import (
@@ -16,6 +48,9 @@ import (
 )
 
 // JobEngine defines pipeline actions required by the HTTP server.
+//
+// Go Concept: Consumer-defined interface.
+// `server` declares only the methods it needs from the factory engine.
 type JobEngine interface {
 	Approve(ctx context.Context, jobID int64, headSHA string) error
 	Reject(ctx context.Context, jobID int64, note string) error
@@ -35,8 +70,8 @@ type Server struct {
 	DB         *store.DB
 	Engine     JobEngine
 	Scheduler  JobScheduler
-	UIFS       fs.FS
-	httpServer *http.Server
+	UIFS       fs.FS        // Virtual filesystem serving embedded React build files
+	httpServer *http.Server // Underlying standard library HTTP server
 }
 
 // NewServer initializes a new Server instance with Chi router and registered routes.
@@ -50,37 +85,42 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 	}
 
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
+
+	// Standard production middleware stack
+	r.Use(middleware.RequestID) // Injects unique X-Request-Id header into context
+	r.Use(middleware.RealIP)    // Parses X-Forwarded-For or X-Real-IP
+	r.Use(middleware.Logger)    // Structured access logging
+	r.Use(middleware.Recoverer) // Catches panics and converts them to HTTP 500 (like @ControllerAdvice)
 	r.Use(s.hostHeaderMiddleware)
 
-	// API routes
+	// API routes mounted under /api
 	r.Route("/api", func(api chi.Router) {
+		// Public endpoints (no auth required)
 		api.Get("/health", s.handleHealth)
 		api.Post("/session", s.handleCreateSession)
 
-		// Authenticated routes (SEC-1, SEC-3)
+		// Protected endpoints (require Bearer Token or Session Cookie) (SEC-1, SEC-3)
 		api.Group(func(protected chi.Router) {
 			protected.Use(s.authMiddleware)
 
-			// Projects (PRJ-1..5)
+			// Project management routes (PRJ-1..5)
 			protected.Get("/projects", s.handleListProjects)
 			protected.Post("/projects", s.handleCreateProject)
 			protected.Get("/projects/{id}", s.handleGetProject)
 
-			// Jobs (INT-1, PIP-6, PIP-7)
+			// Job lifecycle routes (INT-1, PIP-6, PIP-7)
 			protected.Get("/jobs", s.handleListJobs)
 			protected.Post("/jobs", s.handleCreateJob)
 			protected.Get("/jobs/{id}", s.handleGetJob)
 			protected.Post("/jobs/{id}/cancel", s.handleCancelJob)
 			protected.Post("/jobs/{id}/retry", s.handleRetryJob)
 
-			// SSE Events Stream (LOG-4)
+			// SSE Live Events Stream (LOG-4)
 			protected.Get("/events", s.handleEventsSSE)
 
-			// Interactive session-only endpoints (SEC-4, APR-7)
+			// Interactive session-only routes (SEC-4, APR-7):
+			// Approvals and rejections strictly require an interactive browser cookie
+			// to prevent AI agents or scripts from approving their own work.
 			protected.Group(func(sessionOnly chi.Router) {
 				sessionOnly.Use(s.requireSessionOnlyMiddleware)
 				sessionOnly.Post("/jobs/{id}/approve", s.handleApproveJob)
@@ -89,7 +129,7 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 		})
 	})
 
-	// Static UI / SPA fallback
+	// Static UI assets and SPA client-side routing fallback
 	if uiFS != nil {
 		s.setupStaticFiles(r)
 	}
@@ -99,6 +139,7 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 }
 
 // hostHeaderMiddleware validates that incoming requests use a loopback Host header (SEC-2).
+// This prevents DNS rebinding attacks from malicious websites in the user's browser.
 func (s *Server) hostHeaderMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
@@ -120,13 +161,13 @@ func (s *Server) setupStaticFiles(r *chi.Mux) {
 	fileServer := http.FileServer(http.FS(s.UIFS))
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		// API endpoints that don't match should return 404 JSON, not SPA html
+		// API endpoints that don't match must return 404 JSON, never SPA HTML
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api" {
 			http.NotFound(w, r)
 			return
 		}
 
-		// Try opening the requested file in uiFS
+		// Try opening the requested file in the embedded UI filesystem
 		cleaned := strings.TrimPrefix(r.URL.Path, "/")
 		if cleaned == "" {
 			cleaned = "index.html"
@@ -139,7 +180,7 @@ func (s *Server) setupStaticFiles(r *chi.Mux) {
 			return
 		}
 
-		// If file does not exist, serve index.html for SPA client-side routing
+		// File does not exist on disk/embed: serve index.html for client-side routing
 		indexContent, err := fs.ReadFile(s.UIFS, "index.html")
 		if err != nil {
 			http.NotFound(w, r)
@@ -152,7 +193,7 @@ func (s *Server) setupStaticFiles(r *chi.Mux) {
 	})
 }
 
-// Start begins listening and serving HTTP requests.
+// Start begins listening and serving HTTP requests on the specified network address.
 func (s *Server) Start(addr string) error {
 	s.httpServer = &http.Server{
 		Addr:    addr,
@@ -165,7 +206,7 @@ func (s *Server) Start(addr string) error {
 	return nil
 }
 
-// Shutdown gracefully stops the HTTP server.
+// Shutdown gracefully stops the HTTP server, allowing active requests to finish.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.httpServer != nil {
 		return s.httpServer.Shutdown(ctx)

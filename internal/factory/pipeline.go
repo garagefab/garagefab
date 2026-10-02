@@ -1,3 +1,30 @@
+// Package factory orchestrates SDLC pipeline stage execution and job state transitions.
+//
+// ==============================================================================
+// ARCHITECTURAL ROLE & PATTERNS:
+// Application Service / Pipeline Orchestrator (PIP-1..7, APR-5..7).
+//
+// `Engine` serves as the Application Service in Clean/Hexagonal Architecture. It:
+//  1. Manages state transitions across the 7 SDLC stages (`StageIntent` -> `StageDone`).
+//  2. Enforces concurrency rule PIP-5: a job runs at most one step at a time (`sync.Map`).
+//  3. Guarantees transactional consistency PIP-2: every stage/status change is accompanied
+//     by an immutable audit event in the same DB transaction (`store.InTx`).
+//  4. Coordinates Git worktree isolation, checkpoint commits, and automatic cleanup on delivery.
+//
+// GO CONCEPTS & JAVA / SPRING COMPARISONS:
+//
+//  1. Concurrent Execution Guardrail (`sync.Map.LoadOrStore`):
+//     In Java: You might use `ConcurrentHashMap.putIfAbsent(jobId, true)` or distributed locks.
+//     In Go: `sync.Map.LoadOrStore(key, value)` is an atomic compare-and-swap primitive.
+//     If `loaded` is true, the job is already executing and the request is rejected with `ErrJobAlreadyExecuting`.
+//
+//  2. Functional Transaction Boundaries (`store.InTx(ctx, func(tx StoreTx) error)`):
+//     In Spring Boot: Methods are annotated with `@Transactional`.
+//     In Go: Functional transaction closures (Unit of Work pattern) are preferred.
+//     The engine passes a closure to `InTx`. If the closure returns an error, the store
+//     adapter executes a rollback; otherwise, it commits automatically.
+//
+// ==============================================================================
 package factory
 
 import (
@@ -22,17 +49,17 @@ var (
 
 // Engine orchestrates pipeline execution across stages (PIP-1..5).
 type Engine struct {
-	store       Store
-	wtMgr       WorktreeManager
-	agentRunner AgentRunner
-	cmdRunner   CommandRunner
-	logBaseDir  string
+	store       Store           // Persistence port
+	wtMgr       WorktreeManager // Worktree lifecycle port
+	agentRunner AgentRunner     // AI agent execution port
+	cmdRunner   CommandRunner   // Command runner port
+	logBaseDir  string          // Base path on disk for step logs (~/.garagefab/logs)
 
-	executingJobs sync.Map // jobID -> bool (PIP-5)
-	wakeFn        func()
+	executingJobs sync.Map // Thread-safe set tracking actively executing job IDs (PIP-5)
+	wakeFn        func()   // Callback notifying scheduler when a job finishes or yields
 }
 
-// NewEngine creates a new pipeline engine.
+// NewEngine creates a new pipeline engine instance with injected port dependencies.
 func NewEngine(store Store, wtMgr WorktreeManager, agentRunner AgentRunner, cmdRunner CommandRunner, logBaseDir string) *Engine {
 	return &Engine{
 		store:       store,
@@ -43,7 +70,7 @@ func NewEngine(store Store, wtMgr WorktreeManager, agentRunner AgentRunner, cmdR
 	}
 }
 
-// SetWakeFunc registers a callback to notify the scheduler of state changes.
+// SetWakeFunc registers a callback to notify the scheduler of state changes (e.g. slot freed).
 func (e *Engine) SetWakeFunc(fn func()) {
 	e.wakeFn = fn
 }
@@ -57,10 +84,11 @@ func (e *Engine) notifyWake() {
 // ExecuteJob runs a job through its active pipeline stages (PIP-1..5).
 // Enforces PIP-5: a job runs at most one step at a time.
 func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
+	// Guardrail PIP-5: Ensure this job is not already executing concurrently
 	if _, loaded := e.executingJobs.LoadOrStore(jobID, true); loaded {
 		return ErrJobAlreadyExecuting
 	}
-	defer e.executingJobs.Delete(jobID)
+	defer e.executingJobs.Delete(jobID) // Ensure job lock is cleared when function exits
 
 	job, err := e.store.GetJob(ctx, jobID)
 	if err != nil {
@@ -76,6 +104,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	if job.WorktreePath == "" {
 		wtInfo, err := e.wtMgr.Create(ctx, project.RepoPath, project.Name, job.ID, project.BaseRef)
 		if err != nil {
+			// Persist failure state and audit log on worktree creation error
 			_ = e.store.InTx(ctx, func(tx StoreTx) error {
 				_ = tx.UpdateJobState(ctx, job.ID, job.Stage, StatusFailed)
 				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"status":%q,"error":%q}`, StatusFailed, err.Error()))
@@ -89,6 +118,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		job.BaseSHA = wtInfo.BaseSHA
 		job.HeadSHA = wtInfo.BaseSHA
 
+		// Persist worktree coordinates inside a transaction
 		err = e.store.InTx(ctx, func(tx StoreTx) error {
 			return tx.UpdateJobWorktree(ctx, job.ID, wtInfo.Path, wtInfo.Branch, wtInfo.BaseSHA)
 		})
@@ -97,8 +127,9 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		}
 	}
 
-	// 2. Stage 04_Coding
+	// 2. Stage 04_Coding: AI Agent writes code
 	if job.Stage == StageIntent || job.Stage == StageCoding {
+		// Transition state to 04_Coding / running
 		err = e.store.InTx(ctx, func(tx StoreTx) error {
 			if err := tx.UpdateJobState(ctx, job.ID, StageCoding, StatusRunning); err != nil {
 				return err
@@ -111,7 +142,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		job.Stage = StageCoding
 		job.Status = StatusRunning
 
-		// Execute Coding Agent
+		// Initialize StepRun record
 		logPath := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), "step_coding.log")
 		step := &StepRun{
 			JobID:     job.ID,
@@ -127,6 +158,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 			return fmt.Errorf("factory: create coding step run: %w", err)
 		}
 
+		// Execute Coding Agent
 		res, err := e.agentRunner.Run(ctx, AgentRequest{
 			JobID:        job.ID,
 			Stage:        StageCoding,
@@ -142,6 +174,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		now := time.Now().UTC()
 		step.EndedAt = &now
 
+		// Handle Coding failure
 		if err != nil || (res != nil && res.ExitCode != 0) {
 			step.Status = StepStatusFail
 			step.FailureCategory = FailureFlawed
@@ -159,12 +192,13 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 			return fmt.Errorf("factory: coding step failed: %w", err)
 		}
 
+		// Record successful coding step
 		step.Status = StepStatusSuccess
 		code := 0
 		step.ExitCode = &code
 		_ = e.store.UpdateStepRun(ctx, step)
 
-		// Checkpoint commit (WKT-5, COD-9)
+		// Create Checkpoint commit (WKT-5, COD-9)
 		headSHA, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "coding")
 		if err != nil {
 			return fmt.Errorf("factory: coding checkpoint: %w", err)
@@ -176,7 +210,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		})
 	}
 
-	// 3. Stage 05_Independent_Review
+	// 3. Stage 05_Independent_Review: Review agent inspects diff and risk
 	err = e.store.InTx(ctx, func(tx StoreTx) error {
 		if err := tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusRunning); err != nil {
 			return err
@@ -189,7 +223,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	job.Stage = StageIndependentReview
 	job.Status = StatusRunning
 
-	// Execute Review Agent
+	// Initialize StepRun for Review
 	logPathReview := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), "step_review.log")
 	stepReview := &StepRun{
 		JobID:     job.ID,
@@ -205,6 +239,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("factory: create review step run: %w", err)
 	}
 
+	// Execute Review Agent
 	resReview, err := e.agentRunner.Run(ctx, AgentRequest{
 		JobID:        job.ID,
 		Stage:        StageIndependentReview,
@@ -237,7 +272,7 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	stepReview.ExitCode = &codeReview
 	_ = e.store.UpdateStepRun(ctx, stepReview)
 
-	// 4. Transition to Human Approval Gate (Stage 06, Status awaiting_approval) (SCH-4)
+	// 4. Transition to Human Approval Gate (Stage 06_Human_Approval_Gate / awaiting_approval) (SCH-4)
 	err = e.store.InTx(ctx, func(tx StoreTx) error {
 		if err := tx.UpdateJobState(ctx, job.ID, StageHumanApprovalGate, StatusAwaitingApproval); err != nil {
 			return err
@@ -248,11 +283,13 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("factory: transition to approval gate: %w", err)
 	}
 
+	// Notify scheduler that this job is now waiting at a gate, freeing a concurrency slot
 	e.notifyWake()
 	return nil
 }
 
 // Approve records human approval and completes the refactor job (APR-5, APR-7, DLV-4).
+// It verifies that the reviewed head SHA matches the database to prevent stale approvals.
 func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error {
 	job, err := e.store.GetJob(ctx, jobID)
 	if err != nil {
@@ -263,7 +300,7 @@ func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error
 		return fmt.Errorf("%w: job %d is in %s/%s", ErrInvalidState, jobID, job.Stage, job.Status)
 	}
 
-	// Validate HEAD SHA against evidence (APR-5)
+	// Stale Evidence Check (APR-5): Reject approval if user approved outdated commit SHA
 	if headSHA != "" && job.HeadSHA != "" && headSHA != job.HeadSHA {
 		return fmt.Errorf("%w: provided %s, current %s", ErrStaleEvidence, headSHA, job.HeadSHA)
 	}
@@ -293,7 +330,7 @@ func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error
 		return fmt.Errorf("factory: record approval: %w", err)
 	}
 
-	// Clean up worktree on completion (DLV-4)
+	// Clean up worktree on delivery completion (DLV-4, WKT-6)
 	if job.WorktreePath != "" {
 		_ = e.wtMgr.Remove(ctx, project.RepoPath, job.WorktreePath, job.BranchName, false)
 	}
@@ -304,6 +341,7 @@ func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error
 
 // Reject records a human rejection note and moves the job back to 04_Coding/queued (APR-6).
 func (e *Engine) Reject(ctx context.Context, jobID int64, note string) error {
+	// Rejection note is mandatory (APR-6)
 	if note == "" {
 		return ErrEmptyRejectionNote
 	}
@@ -317,6 +355,7 @@ func (e *Engine) Reject(ctx context.Context, jobID int64, note string) error {
 		return fmt.Errorf("%w: job %d is in %s/%s", ErrInvalidState, jobID, job.Stage, job.Status)
 	}
 
+	// Atomically record rejection and requeue the job back to Coding stage
 	err = e.store.InTx(ctx, func(tx StoreTx) error {
 		approval := &Approval{
 			JobID:    job.ID,
@@ -357,6 +396,7 @@ func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("factory: get project %d: %w", job.ProjectID, err)
 	}
 
+	// Update job state to cancelled
 	err = e.store.InTx(ctx, func(tx StoreTx) error {
 		if err := tx.UpdateJobState(ctx, job.ID, job.Stage, StatusCancelled); err != nil {
 			return err
@@ -387,7 +427,7 @@ func (e *Engine) Retry(ctx context.Context, jobID int64) error {
 		return fmt.Errorf("%w: retry only allowed on failed or interrupted jobs, got %s", ErrInvalidState, job.Status)
 	}
 
-	// Reset worktree to last checkpoint (WKT-5)
+	// Roll back worktree to the last successful checkpoint commit (WKT-5)
 	if job.WorktreePath != "" {
 		targetSHA := job.HeadSHA
 		if targetSHA == "" {
@@ -396,6 +436,7 @@ func (e *Engine) Retry(ctx context.Context, jobID int64) error {
 		_ = e.wtMgr.Reset(ctx, job.WorktreePath, targetSHA)
 	}
 
+	// Re-queue the job in its current stage
 	err = e.store.InTx(ctx, func(tx StoreTx) error {
 		if err := tx.UpdateJobState(ctx, job.ID, job.Stage, StatusQueued); err != nil {
 			return err
