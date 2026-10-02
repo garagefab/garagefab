@@ -35,6 +35,7 @@ package factory
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -66,7 +67,9 @@ func NewScheduler(store Store, engine *Engine, maxConcurrent int) *Scheduler {
 		wakeCh:        make(chan struct{}, 10), // Buffered channel for wake signals
 	}
 	// Connect engine's wake notification directly to scheduler's Wake method
-	engine.SetWakeFunc(s.Wake)
+	if engine != nil {
+		engine.SetWakeFunc(s.Wake)
+	}
 	return s
 }
 
@@ -201,10 +204,44 @@ func (s *Scheduler) scheduleNext(ctx context.Context) {
 			// Run pipeline engine
 			if err := s.engine.ExecuteJob(jobCtx, j.ID); err != nil {
 				slog.Error("scheduler: job execution ended with error", "job_id", j.ID, "error", err)
+
+				// Defensive Fail-Safe: If the engine returned an unexpected error and left the job
+				// in StatusRunning (e.g. unexpected git, disk I/O, or OS error outside the repair loop),
+				// transition the job to StatusFailed (or StatusInterrupted if cancelled) so that it does
+				// not hang indefinitely in the UI and can be retried via the dashboard or API (PIP-7).
+				s.recoverStuckRunningJob(j.ID, jobCtx.Err(), err)
 			}
 			// Trigger wake to immediately fill the vacated slot
 			s.Wake()
 		}(job, cancel)
+	}
+}
+
+// recoverStuckRunningJob ensures that a job whose pipeline execution failed with an unhandled error
+// is not left hanging indefinitely in StatusRunning.
+// It checks whether the job is still marked StatusRunning in the store, and if so, transitions it
+// to StatusFailed (or StatusInterrupted if context was cancelled), recording an audit event.
+func (s *Scheduler) recoverStuckRunningJob(jobID int64, ctxErr error, causeErr error) {
+	bgCtx := context.Background()
+	currentJob, err := s.store.GetJob(bgCtx, jobID)
+	if err != nil || currentJob == nil {
+		return
+	}
+
+	// Only transition if the job was left in a transient "running" state
+	if currentJob.Status == StatusRunning {
+		targetStatus := StatusFailed
+		if ctxErr != nil {
+			targetStatus = StatusInterrupted
+		}
+
+		_ = s.store.InTx(bgCtx, func(tx StoreTx) error {
+			if err := tx.UpdateJobState(bgCtx, currentJob.ID, currentJob.Stage, targetStatus); err != nil {
+				return err
+			}
+			return tx.RecordEvent(bgCtx, currentJob.ID, "job.status_changed",
+				fmt.Sprintf(`{"stage":%q,"status":%q,"error":%q}`, currentJob.Stage, targetStatus, causeErr.Error()))
+		})
 	}
 }
 

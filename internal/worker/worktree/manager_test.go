@@ -25,6 +25,7 @@ package worktree_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -257,5 +258,58 @@ func TestWorktree_Artifacts_LOG3(t *testing.T) {
 	}
 	if len(artifactsAfter) != 1 || artifactsAfter[0] != "spec.md" {
 		t.Errorf("expected [spec.md], got %v", artifactsAfter)
+	}
+}
+
+// TestWorktree_ConcurrentDiffAndCheckpoint verifies that concurrent Diff (which runs git add -N)
+// and Checkpoint (which runs git commit) on the same worktree do not fail due to index.lock collisions.
+func TestWorktree_ConcurrentDiffAndCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	repoDir := createTestGitRepo(t)
+	baseDir := filepath.Join(t.TempDir(), "worktrees")
+	mgr := worktree.NewManager(baseDir)
+
+	jobID := int64(888)
+	info, err := mgr.Create(ctx, repoDir, "test-proj", jobID, "main")
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	defer func() {
+		_ = mgr.Remove(ctx, repoDir, info.Path, info.Branch, true)
+	}()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 20)
+
+	// Concurrently run Diff and Checkpoint operations on the same worktree
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+
+		// Goroutine A: calls Diff (invokes git add -N .)
+		go func() {
+			defer wg.Done()
+			_, diffErr := mgr.Diff(ctx, info.Path, info.BaseSHA)
+			if diffErr != nil {
+				errCh <- fmt.Errorf("concurrent diff failed: %w", diffErr)
+			}
+		}()
+
+		// Goroutine B: writes a file and calls Checkpoint (invokes git add -A && git commit)
+		go func(iteration int) {
+			defer wg.Done()
+			filePath := filepath.Join(info.Path, fmt.Sprintf("file_%d.txt", iteration))
+			_ = os.WriteFile(filePath, []byte(fmt.Sprintf("content %d", iteration)), 0644)
+			_, cpErr := mgr.Checkpoint(ctx, info.Path, jobID, fmt.Sprintf("commit %d", iteration))
+			if cpErr != nil {
+				errCh <- fmt.Errorf("concurrent checkpoint failed: %w", cpErr)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatalf("concurrent worktree operation failed: %v", err)
 	}
 }

@@ -107,12 +107,22 @@ func (f *fakeStoreForScheduler) MarkProcessInactive(ctx context.Context, process
 }
 
 func (f *fakeStoreForScheduler) InTx(ctx context.Context, fn func(tx StoreTx) error) error {
-	return fn(&fakeTxForScheduler{})
+	return fn(&fakeTxForScheduler{store: f})
 }
 
-type fakeTxForScheduler struct{}
+type fakeTxForScheduler struct {
+	store *fakeStoreForScheduler
+}
 
 func (t *fakeTxForScheduler) UpdateJobState(ctx context.Context, jobID int64, stage, status string) error {
+	if t.store != nil {
+		t.store.mu.Lock()
+		if j, ok := t.store.jobs[jobID]; ok {
+			j.Stage = stage
+			j.Status = status
+		}
+		t.store.mu.Unlock()
+	}
 	return nil
 }
 func (t *fakeTxForScheduler) UpdateJobWorktree(ctx context.Context, jobID int64, worktreePath, branchName, baseSHA string) error {
@@ -249,5 +259,35 @@ func TestScheduler_ProjectConcurrencyLimit_SCH2(t *testing.T) {
 	// Job 303 (Proj 2) SHOULD be admitted (not blocked by Proj 1's limit)
 	if _, ok := scheduler.runningJobs.Load(int64(303)); !ok {
 		t.Errorf("expected Job 303 (Proj 2) to be admitted while Proj 1 is capped")
+	}
+}
+
+// TestScheduler_RecoverStuckRunningJob verifies that when an unhandled error occurs during ExecuteJob
+// and leaves the job in StatusRunning, the scheduler transitions the job to StatusFailed (or StatusInterrupted)
+// so that it never hangs indefinitely in the UI.
+func TestScheduler_RecoverStuckRunningJob(t *testing.T) {
+	store := &fakeStoreForScheduler{
+		jobs: map[int64]*Job{
+			401: {ID: 401, ProjectID: 1, Stage: StageCoding, Status: StatusRunning, Title: "Stuck Job"},
+		},
+	}
+
+	scheduler := NewScheduler(store, nil, 1)
+
+	// Recover job when engine returned an unexpected error
+	unexpectedErr := fmt.Errorf("unexpected git index.lock failure")
+	scheduler.recoverStuckRunningJob(401, nil, unexpectedErr)
+
+	job, _ := store.GetJob(context.Background(), 401)
+	if job.Status != StatusFailed {
+		t.Errorf("expected job status to be %s, got %s", StatusFailed, job.Status)
+	}
+
+	// Verify cancellation transitions to StatusInterrupted
+	store.jobs[401].Status = StatusRunning
+	scheduler.recoverStuckRunningJob(401, context.Canceled, context.Canceled)
+	job, _ = store.GetJob(context.Background(), 401)
+	if job.Status != StatusInterrupted {
+		t.Errorf("expected job status to be %s upon cancellation, got %s", StatusInterrupted, job.Status)
 	}
 }

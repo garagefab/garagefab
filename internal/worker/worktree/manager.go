@@ -59,8 +59,9 @@ type WorktreeInfo struct {
 // Manager manages git worktrees for jobs with per-project mutex serialization (WKT-1..9).
 type Manager struct {
 	worktreeBaseDir string                 // Base directory where worktrees are provisioned (~/.garagefab/worktrees)
-	mu              sync.Mutex             // Master mutex protecting the projectLocks map
+	mu              sync.Mutex             // Master mutex protecting the projectLocks and worktreeLocks maps
 	projectLocks    map[string]*sync.Mutex // Map from repoPath -> Mutex for per-project serialization
+	worktreeLocks   map[string]*sync.Mutex // Map from worktreePath -> Mutex for per-worktree serialization
 }
 
 // NewManager creates a worktree manager storing worktrees under worktreeBaseDir.
@@ -68,6 +69,7 @@ func NewManager(worktreeBaseDir string) *Manager {
 	return &Manager{
 		worktreeBaseDir: worktreeBaseDir,
 		projectLocks:    make(map[string]*sync.Mutex),
+		worktreeLocks:   make(map[string]*sync.Mutex),
 	}
 }
 
@@ -82,6 +84,29 @@ func (m *Manager) getProjectLock(repoPath string) *sync.Mutex {
 	if !ok {
 		lock = &sync.Mutex{}
 		m.projectLocks[cleanPath] = lock
+	}
+	return lock
+}
+
+// getWorktreeLock returns the synchronization mutex for the specified worktree path.
+// It uses `m.mu` to safely read or insert into the map.
+//
+// Concurrency & Git Index Isolation:
+// While `getProjectLock` serializes worktree additions and branch deletions on the main repo,
+// individual worktrees have their own `.git/worktrees/<id>/index` file. Operations that modify
+// or read the worktree index (such as `Diff` with `git add -N .`, `Checkpoint` with `git add -A / commit`,
+// or `Reset`) will conflict on `index.lock` if called concurrently (for instance, when the web dashboard
+// or an SSE listener calls `/api/jobs/:id/diff` while the pipeline engine creates a checkpoint commit).
+// Serializing access per worktree path completely eliminates transient `index.lock` collisions.
+func (m *Manager) getWorktreeLock(worktreePath string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cleanPath := filepath.Clean(worktreePath)
+	lock, ok := m.worktreeLocks[cleanPath]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.worktreeLocks[cleanPath] = lock
 	}
 	return lock
 }
@@ -171,6 +196,11 @@ func (m *Manager) Create(ctx context.Context, repoPath, projectName string, jobI
 // Checkpoint stages all changes and creates an automated git commit in the worktree (WKT-5, COD-9).
 // It returns the newly created commit SHA.
 func (m *Manager) Checkpoint(ctx context.Context, worktreePath string, jobID int64, message string) (string, error) {
+	// Serialize operations on this worktree to prevent concurrent index.lock collisions (e.g. with Diff)
+	lock := m.getWorktreeLock(worktreePath)
+	lock.Lock()
+	defer lock.Unlock()
+
 	// Stage all tracked and untracked files
 	addCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "add", "-A")
 	if out, err := addCmd.CombinedOutput(); err != nil {
@@ -197,6 +227,11 @@ func (m *Manager) Checkpoint(ctx context.Context, worktreePath string, jobID int
 // Reset resets the worktree to a previous target checkpoint SHA (WKT-5).
 // It rolls back both tracked modifications (`git reset --hard`) and untracked files (`git clean -fd`).
 func (m *Manager) Reset(ctx context.Context, worktreePath, targetSHA string) error {
+	// Serialize worktree access to ensure reset and clean operations do not race with other commands
+	lock := m.getWorktreeLock(worktreePath)
+	lock.Lock()
+	defer lock.Unlock()
+
 	if targetSHA == "" {
 		targetSHA = "HEAD"
 	}
@@ -220,9 +255,20 @@ func (m *Manager) Reset(ctx context.Context, worktreePath, targetSHA string) err
 // It also prunes stale worktree administrative metadata from `.git/worktrees/`.
 func (m *Manager) Remove(ctx context.Context, repoPath, worktreePath, branchName string, deleteBranch bool) error {
 	// Serialize against other worktree operations on the same repository
-	lock := m.getProjectLock(repoPath)
-	lock.Lock()
-	defer lock.Unlock()
+	repoLock := m.getProjectLock(repoPath)
+	repoLock.Lock()
+	defer repoLock.Unlock()
+
+	wtLock := m.getWorktreeLock(worktreePath)
+	wtLock.Lock()
+	defer wtLock.Unlock()
+
+	// Clean up worktree mutex after removal
+	defer func() {
+		m.mu.Lock()
+		delete(m.worktreeLocks, filepath.Clean(worktreePath))
+		m.mu.Unlock()
+	}()
 
 	// 1. Unregister and delete worktree directory
 	if _, err := os.Stat(worktreePath); err == nil {
@@ -247,6 +293,11 @@ func (m *Manager) Remove(ctx context.Context, repoPath, worktreePath, branchName
 // Diff returns the git diff output from the merge-base of baseSHA and the current worktree (WKT-3, COD-9).
 // This accurately reflects all modifications introduced by the job, including uncommitted edits and newly added files.
 func (m *Manager) Diff(ctx context.Context, worktreePath, baseSHA string) (string, error) {
+	// Serialize operations on this worktree to prevent concurrent index mutations (git add -N vs commit)
+	lock := m.getWorktreeLock(worktreePath)
+	lock.Lock()
+	defer lock.Unlock()
+
 	// Find the common ancestor commit
 	mbCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "merge-base", baseSHA, "HEAD")
 	mbOut, err := mbCmd.Output()
@@ -271,6 +322,11 @@ func (m *Manager) Diff(ctx context.Context, worktreePath, baseSHA string) (strin
 
 // HeadSHA returns the commit hash of the current HEAD in the worktree.
 func (m *Manager) HeadSHA(ctx context.Context, worktreePath string) (string, error) {
+	// Serialize access for consistency
+	lock := m.getWorktreeLock(worktreePath)
+	lock.Lock()
+	defer lock.Unlock()
+
 	shaCmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "HEAD")
 	out, err := shaCmd.Output()
 	if err != nil {
