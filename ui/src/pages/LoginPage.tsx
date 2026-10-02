@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState, FormEvent } from 'react';
 import { KeyRound, Loader2, AlertCircle, ArrowRight } from 'lucide-react';
 import { exchangeApiToken } from '../lib/auth';
 import { useRouter } from '../lib/router';
@@ -46,7 +46,7 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
     }
   }, [navigate, onLoginSuccess]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!tokenInput.trim()) {
       setErrorMessage('Please enter your API token');

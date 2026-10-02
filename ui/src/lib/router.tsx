@@ -3,7 +3,7 @@
  * Works natively with Go embedded static file server fallback (spec §7).
  */
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
 interface RouterContextType {
   path: string;
@@ -21,7 +21,7 @@ export function useRouter() {
   return useContext(RouterContext);
 }
 
-export function RouterProvider({ children }: { children: React.ReactNode }) {
+export function RouterProvider({ children }: { children: ReactNode }) {
   const [path, setPath] = useState(window.location.pathname || '/');
 
   useEffect(() => {
@@ -63,7 +63,7 @@ export function Link({
   title,
 }: {
   href: string;
-  children: React.ReactNode;
+  children: ReactNode;
   className?: string;
   title?: string;
 }) {

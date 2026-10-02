@@ -108,6 +108,9 @@ func NewServer(cfg *config.Config, db *store.DB, engine JobEngine, scheduler Job
 		api.Group(func(protected chi.Router) {
 			protected.Use(s.authMiddleware)
 
+			// Dashboard Overview route (UI-1)
+			protected.Get("/overview", s.handleGetOverview)
+
 			// Project management routes (PRJ-1..5)
 			protected.Get("/projects", s.handleListProjects)
 			protected.Post("/projects", s.handleCreateProject)

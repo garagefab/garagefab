@@ -152,6 +152,10 @@ func (db *DB) ProcessRecords() *ProcessRecordRepo {
 	return &ProcessRecordRepo{q: &dbExecutor{write: db.writeDB, read: db.readDB}}
 }
 
+func (db *DB) Overview() *OverviewRepo {
+	return &OverviewRepo{q: &dbExecutor{write: db.writeDB, read: db.readDB}}
+}
+
 // ------------------------------------------------------------------------------
 // Repository accessors on Tx (transactional)
 // ------------------------------------------------------------------------------
@@ -182,4 +186,8 @@ func (tx *Tx) Sessions() *SessionRepo {
 
 func (tx *Tx) ProcessRecords() *ProcessRecordRepo {
 	return &ProcessRecordRepo{q: tx.exec}
+}
+
+func (tx *Tx) Overview() *OverviewRepo {
+	return &OverviewRepo{q: tx.exec}
 }
