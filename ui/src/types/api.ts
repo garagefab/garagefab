@@ -110,27 +110,19 @@ export interface ClarificationQuestionItem {
 }
 
 export interface EvidenceSummary {
-  verdict: 'PASSED' | 'FLAWED' | 'BLOCKED';
-  checks: {
-    build: boolean;
-    test: boolean;
-    lint: boolean;
-  };
-  tests: {
-    passed: number;
-    failed: number;
-    skipped: number;
-  };
-  diff_stats: {
-    files_changed: number;
-    insertions: number;
-    deletions: number;
-  };
+  job_id: number;
+  head_sha: string;
+  build_status: string;
+  test_status: string;
+  lint_status: string;
+  review_decision: string;
+  risk_scores?: Record<string, number>;
+  warnings_count: number;
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  drill_downs?: Record<string, string>;
   warnings?: string[];
-  drill_down: {
-    diff_url: string;
-    review_report_url?: string;
-  };
 }
 
 export interface ApiError {

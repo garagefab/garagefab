@@ -169,6 +169,28 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(job)
 }
 
+// handleGetJobSteps handles GET /api/jobs/{id}/steps.
+func (s *Server) handleGetJobSteps(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid job id", http.StatusBadRequest)
+		return
+	}
+
+	steps, err := s.DB.StepRuns().ListStepRunsByJob(r.Context(), id)
+	if err != nil {
+		http.Error(w, "Failed to retrieve step runs: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if steps == nil {
+		steps = []*store.StepRun{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(steps)
+}
+
 // handleApproveJob handles POST /api/jobs/{id}/approve (APR-5, APR-7, SEC-4).
 // Restricted to interactive browser session cookies.
 func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
