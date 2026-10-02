@@ -156,6 +156,18 @@ func (m *MockStore) UpdateStepRun(ctx context.Context, step *factory.StepRun) er
 	return nil
 }
 
+func (m *MockStore) ListStepRunsByJob(ctx context.Context, jobID int64) ([]*factory.StepRun, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var res []*factory.StepRun
+	for _, s := range m.stepRuns {
+		if s.JobID == jobID {
+			res = append(res, s)
+		}
+	}
+	return res, nil
+}
+
 func (m *MockStore) CreateProcessRecord(ctx context.Context, stepRunID int64, pid, pgid int, startTime int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -238,6 +250,8 @@ type MockWorktreeManager struct {
 	removedWorktrees  map[int64]bool
 	resetCount        int
 	artifacts         map[string][]byte
+	tamperedDiff      string
+	currentHead       string
 }
 
 func newMockWorktreeManager() *MockWorktreeManager {
@@ -263,6 +277,7 @@ func (m *MockWorktreeManager) Checkpoint(ctx context.Context, worktreePath strin
 	sha := fmt.Sprintf("sha-%s-%d", message, jobID)
 	m.checkpoints[jobID] = sha
 	m.checkpointHistory = append(m.checkpointHistory, message)
+	m.currentHead = sha
 	return sha, nil
 }
 
@@ -276,10 +291,19 @@ func (m *MockWorktreeManager) Remove(ctx context.Context, repoPath, worktreePath
 }
 
 func (m *MockWorktreeManager) Diff(ctx context.Context, worktreePath, baseSHA string) (string, error) {
-	return "diff --git a/test.go b/test.go", nil
+	if m.tamperedDiff != "" {
+		return m.tamperedDiff, nil
+	}
+	if baseSHA == "head123" || strings.HasPrefix(baseSHA, "sha-") {
+		return "diff --git a/.garagefab/jobs/1/review.json b/.garagefab/jobs/1/review.json", nil
+	}
+	return "diff --git a/test.go b/test.go\n--- a/test.go\n+++ b/test.go\n@@ -1 +1 @@\n-old\n+new", nil
 }
 
 func (m *MockWorktreeManager) HeadSHA(ctx context.Context, worktreePath string) (string, error) {
+	if m.currentHead != "" {
+		return m.currentHead, nil
+	}
 	return "head123", nil
 }
 
@@ -293,15 +317,28 @@ func (m *MockWorktreeManager) WriteArtifact(ctx context.Context, worktreePath st
 }
 
 func (m *MockWorktreeManager) ReadArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) ([]byte, error) {
-	if m.artifacts == nil {
-		return nil, fmt.Errorf("artifact not found: %s", filename)
+	if m.artifacts != nil {
+		key := fmt.Sprintf("%d/%s", jobID, filename)
+		if content, ok := m.artifacts[key]; ok {
+			return content, nil
+		}
 	}
-	key := fmt.Sprintf("%d/%s", jobID, filename)
-	content, ok := m.artifacts[key]
-	if !ok {
-		return nil, fmt.Errorf("artifact not found: %s", filename)
+	if filename == "review.json" {
+		return []byte(`{
+  "schema_version": 1,
+  "decision": "approve",
+  "summary": "Mock review approved",
+  "risk": {
+    "side_effect": {"score": 1, "rationale": "low"},
+    "performance": {"score": 1, "rationale": "low"},
+    "backward_compatibility": {"score": 1, "rationale": "low"}
+  },
+  "findings": [],
+  "warnings": [],
+  "spec_coverage": []
+}`), nil
 	}
-	return content, nil
+	return nil, fmt.Errorf("artifact not found: %s", filename)
 }
 
 func (m *MockWorktreeManager) RemoveArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) error {

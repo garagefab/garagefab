@@ -53,7 +53,22 @@ type scenario3ScriptedAgent struct {
 
 func (a *scenario3ScriptedAgent) Run(ctx context.Context, req factory.AgentRequest) (*factory.AgentResult, error) {
 	if req.Stage == factory.StageIndependentReview {
-		// Review agent passes
+		artifactDir := filepath.Join(req.WorktreePath, ".garagefab", "jobs", fmt.Sprintf("%d", req.JobID))
+		_ = os.MkdirAll(artifactDir, 0755)
+		reviewJSON := `{
+  "schema_version": 1,
+  "decision": "approve",
+  "summary": "M2 scenario 3 review passed",
+  "risk": {
+    "side_effect": {"score": 1, "rationale": "low"},
+    "performance": {"score": 1, "rationale": "low"},
+    "backward_compatibility": {"score": 1, "rationale": "low"}
+  },
+  "findings": [],
+  "warnings": [],
+  "spec_coverage": []
+}`
+		_ = os.WriteFile(filepath.Join(artifactDir, "review.json"), []byte(reviewJSON), 0644)
 		return &factory.AgentResult{ExitCode: 0, Summary: "review passed"}, nil
 	}
 

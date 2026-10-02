@@ -290,6 +290,9 @@ type customDiffWorktreeManager struct {
 }
 
 func (m *customDiffWorktreeManager) Diff(ctx context.Context, worktreePath, baseSHA string) (string, error) {
+	if baseSHA == "head123" || strings.HasPrefix(baseSHA, "sha-") {
+		return m.MockWorktreeManager.Diff(ctx, worktreePath, baseSHA)
+	}
 	if m.diffFn != nil {
 		return m.diffFn(), nil
 	}

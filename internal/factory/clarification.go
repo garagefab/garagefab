@@ -112,7 +112,7 @@ func (e *Engine) SubmitClarification(ctx context.Context, jobID int64, answers [
 		if qText == "" {
 			qText = fmt.Sprintf("Question %d", a.Q)
 		}
-		sb.WriteString(fmt.Sprintf("## Q%d\n%s\n**Answer:** %s\n\n", a.Q, qText, strings.TrimSpace(a.Answer)))
+		fmt.Fprintf(&sb, "## Q%d\n%s\n**Answer:** %s\n\n", a.Q, qText, strings.TrimSpace(a.Answer))
 	}
 
 	// Write clarification.md

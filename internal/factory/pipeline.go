@@ -29,6 +29,7 @@ package factory
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -44,6 +45,8 @@ var (
 	ErrStaleEvidence = errors.New("factory: stale evidence head sha mismatch")
 	// ErrEmptyRejectionNote is returned when rejecting without a note (APR-6).
 	ErrEmptyRejectionNote = errors.New("factory: rejection note cannot be empty")
+	// ErrSpecInvalid is returned when a spec fails validation upon approval (SPC-6).
+	ErrSpecInvalid = errors.New("factory: spec validation failed")
 	// ErrJobAlreadyExecuting is returned if a job is already running in this process (PIP-5).
 	ErrJobAlreadyExecuting = errors.New("factory: job is already executing")
 )
@@ -223,97 +226,13 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		}
 	}
 
-	// 3. Stage 05_Independent_Review: Review agent inspects diff and risk
-	err = e.store.InTx(jobCtx, func(tx StoreTx) error {
-		if err := tx.UpdateJobState(jobCtx, job.ID, StageIndependentReview, StatusRunning); err != nil {
+	// 5. Stage 05_Independent_Review: Review agent inspects diff and risk (REV-1..6, APR-1..4)
+	if job.Stage == StageCoding || job.Stage == StageIndependentReview {
+		if err := e.executeReviewStage(jobCtx, job, project, projCfg); err != nil {
 			return err
 		}
-		return tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageIndependentReview, StatusRunning))
-	})
-	if err != nil {
-		return fmt.Errorf("factory: transition to review: %w", err)
-	}
-	job.Stage = StageIndependentReview
-	job.Status = StatusRunning
-
-	// Initialize StepRun for Review
-	logPathReview := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), "step_review.log")
-	stepReview := &StepRun{
-		JobID:     job.ID,
-		Stage:     StageIndependentReview,
-		Kind:      StepKindAgent,
-		Attempt:   1,
-		Executor:  "agent",
-		Status:    StepStatusRunning,
-		LogPath:   logPathReview,
-		StartedAt: time.Now().UTC(),
-	}
-	if err := e.store.CreateStepRun(jobCtx, stepReview); err != nil {
-		return fmt.Errorf("factory: create review step run: %w", err)
 	}
 
-	// Execute Review Agent
-	resReview, err := e.agentRunner.Run(jobCtx, AgentRequest{
-		JobID:        job.ID,
-		Stage:        StageIndependentReview,
-		WorktreePath: job.WorktreePath,
-		ProjectName:  project.Name,
-		LogPath:      logPathReview,
-		OnProcessStart: func(pid, pgid int, startTime int64) {
-			_ = e.store.CreateProcessRecord(jobCtx, stepReview.ID, pid, pgid, startTime)
-		},
-	})
-
-	nowReview := time.Now().UTC()
-	stepReview.EndedAt = &nowReview
-
-	if err != nil || (resReview != nil && resReview.ExitCode != 0) {
-		stepReview.Status = StepStatusFail
-		stepReview.FailureCategory = FailureFlawed
-		if resReview != nil {
-			code := resReview.ExitCode
-			stepReview.ExitCode = &code
-		}
-		_ = e.store.UpdateStepRun(jobCtx, stepReview)
-
-		_ = e.store.InTx(jobCtx, func(tx StoreTx) error {
-			_ = tx.UpdateJobState(jobCtx, job.ID, StageIndependentReview, StatusFailed)
-			_ = tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageIndependentReview, StatusFailed))
-			return nil
-		})
-		return fmt.Errorf("factory: review step failed: %w", err)
-	}
-
-	stepReview.Status = StepStatusSuccess
-	codeReview := 0
-	stepReview.ExitCode = &codeReview
-	_ = e.store.UpdateStepRun(jobCtx, stepReview)
-
-	// Create Checkpoint commit for review
-	headSHAReview, err := e.wtMgr.Checkpoint(jobCtx, job.WorktreePath, job.ID, "review")
-	if err != nil {
-		return fmt.Errorf("factory: review checkpoint: %w", err)
-	}
-	job.HeadSHA = headSHAReview
-
-	_ = e.store.InTx(jobCtx, func(tx StoreTx) error {
-		return tx.UpdateJobHead(jobCtx, job.ID, headSHAReview)
-	})
-
-	// 4. Stage 06_Human_Approval_Gate
-	err = e.store.InTx(jobCtx, func(tx StoreTx) error {
-		if err := tx.UpdateJobState(jobCtx, job.ID, StageHumanApprovalGate, StatusAwaitingApproval); err != nil {
-			return err
-		}
-		return tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageHumanApprovalGate, StatusAwaitingApproval))
-	})
-	if err != nil {
-		return fmt.Errorf("factory: transition to gate: %w", err)
-	}
-
-	job.Stage = StageHumanApprovalGate
-	job.Status = StatusAwaitingApproval
-	e.notifyWake()
 	return nil
 }
 
@@ -857,61 +776,354 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 	})
 }
 
-// Approve records human approval and completes the refactor job (APR-5, APR-7, DLV-4).
-// It verifies that the reviewed head SHA matches the database to prevent stale approvals.
+// executeReviewStage executes the independent review agent, validates critique results,
+// checks for unauthorized repository modifications, commits the review checkpoint,
+// and compiles the immutable audit evidence for the human gate (REV-1..6, APR-1..4).
+//
+// Role in Hexagonal Architecture:
+// Acts as the Orchestration Service for stage 05_Independent_Review.
+// Java / Spring Comparison: Similar to an automated SonarQube/Checkstyle quality gate step in a Jenkins/GitLab pipeline,
+// but with an autonomous LLM critic producing structured JSON risk and defect assessments.
+func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Project, projCfg *ProjectConfig) error {
+	// 1. Transition state to 05_Independent_Review / running
+	err := e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusRunning); err != nil {
+			return err
+		}
+		if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageIndependentReview)); err != nil {
+			return err
+		}
+		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageIndependentReview, StatusRunning))
+	})
+	if err != nil {
+		return fmt.Errorf("factory: transition to review: %w", err)
+	}
+	job.Stage = StageIndependentReview
+	job.Status = StatusRunning
+
+	// Capture worktree HEAD SHA before review agent execution to verify no code is tampered (REV-4)
+	stepStartSHA, err := e.wtMgr.HeadSHA(ctx, job.WorktreePath)
+	if err != nil || stepStartSHA == "" {
+		stepStartSHA = job.HeadSHA
+	}
+
+	// 2. Prepare isolated prompt without prior coding agent conversation history (REV-1)
+	var promptBuilder strings.Builder
+	fmt.Fprintf(&promptBuilder, "# Review Task for Job %d (%s)\n\n", job.ID, job.Title)
+	fmt.Fprintf(&promptBuilder, "## Intent\n%s\n\n", job.Intent)
+
+	if job.WorkType == WorkTypeFeature {
+		if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
+			fmt.Fprintf(&promptBuilder, "## Specification\n%s\n\n", string(specBytes))
+		}
+	}
+
+	diffOutput, _ := e.wtMgr.Diff(ctx, job.WorktreePath, job.BaseSHA)
+	fmt.Fprintf(&promptBuilder, "## Code Changes (Diff from Base)\n```diff\n%s\n```\n\n", diffOutput)
+
+	// Gather prior test/build command results
+	stepRuns, _ := e.store.ListStepRunsByJob(ctx, job.ID)
+	promptBuilder.WriteString("## Prior Verification Results\n")
+	for _, sr := range stepRuns {
+		if sr.Stage == StageCoding && sr.Kind == StepKindCommand {
+			exit := 0
+			if sr.ExitCode != nil {
+				exit = *sr.ExitCode
+			}
+			fmt.Fprintf(&promptBuilder, "- Attempt %d command (exit %d, status: %s): %s\n", sr.Attempt, exit, sr.Status, sr.LogPath)
+		}
+	}
+	promptBuilder.WriteString("\n## Instructions\n" +
+		"Analyze the code changes against the intent/spec. Assess risks (side effects, performance, backward compatibility). " +
+		"Write your review to .garagefab/jobs/<id>/review.json conforming to Schema Version 1. " +
+		"DO NOT modify any code or other files.\n")
+
+	// 3. Initialize StepRun for Review (REV-6: single attempt, no repair loop)
+	logPathReview := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), "step_review.log")
+	stepReview := &StepRun{
+		JobID:     job.ID,
+		Stage:     StageIndependentReview,
+		Kind:      StepKindAgent,
+		Attempt:   1,
+		Executor:  "agent",
+		Status:    StepStatusRunning,
+		LogPath:   logPathReview,
+		StartedAt: time.Now().UTC(),
+	}
+	if err := e.store.CreateStepRun(ctx, stepReview); err != nil {
+		return fmt.Errorf("factory: create review step run: %w", err)
+	}
+
+	// 4. Execute Review Agent
+	resReview, runErr := e.agentRunner.Run(ctx, AgentRequest{
+		JobID:        job.ID,
+		Stage:        StageIndependentReview,
+		WorktreePath: job.WorktreePath,
+		Prompt:       promptBuilder.String(),
+		ProjectName:  project.Name,
+		LogPath:      logPathReview,
+		OnProcessStart: func(pid, pgid int, startTime int64) {
+			_ = e.store.CreateProcessRecord(ctx, stepReview.ID, pid, pgid, startTime)
+		},
+	})
+
+	nowReview := time.Now().UTC()
+	stepReview.EndedAt = &nowReview
+
+	// Review agent crash or execution error (REV-6)
+	if runErr != nil || (resReview != nil && resReview.ExitCode != 0) {
+		stepReview.Status = StepStatusFail
+		stepReview.FailureCategory = FailureFlawed
+		if resReview != nil {
+			code := resReview.ExitCode
+			stepReview.ExitCode = &code
+		}
+		_ = e.store.UpdateStepRun(ctx, stepReview)
+		_ = e.store.InTx(ctx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageIndependentReview, StatusFailed, FailureFlawed))
+			return nil
+		})
+		return fmt.Errorf("factory: review agent failed: %w", runErr)
+	}
+
+	// 5. Detect Repository Tampering (REV-4)
+	// Any code changes made outside .garagefab/ during review fail the step as Flawed
+	// and revert the modifications to stepStartSHA.
+	tamperDiff, _ := e.wtMgr.Diff(ctx, job.WorktreePath, stepStartSHA)
+	if hasCodeModifications(tamperDiff) {
+		_ = e.wtMgr.Reset(ctx, job.WorktreePath, stepStartSHA)
+		stepReview.Status = StepStatusFail
+		stepReview.FailureCategory = FailureFlawed
+		code := 1
+		stepReview.ExitCode = &code
+		_ = e.store.UpdateStepRun(ctx, stepReview)
+		_ = e.store.InTx(ctx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageIndependentReview, StatusFailed, FailureFlawed))
+			return nil
+		})
+		return fmt.Errorf("factory: review agent modified code outside review artifacts (REV-4)")
+	}
+
+	// 6. Read and Validate review.json (REV-2, REV-6)
+	reviewBytes, readErr := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "review.json")
+	if readErr != nil {
+		stepReview.Status = StepStatusFail
+		stepReview.FailureCategory = FailureFlawed
+		_ = e.store.UpdateStepRun(ctx, stepReview)
+		_ = e.store.InTx(ctx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageIndependentReview, StatusFailed, FailureFlawed))
+			return nil
+		})
+		return fmt.Errorf("factory: review.json missing: %w", readErr)
+	}
+
+	reviewReport, valErr := ValidateReviewJSON(reviewBytes)
+	if valErr != nil {
+		stepReview.Status = StepStatusFail
+		stepReview.FailureCategory = FailureFlawed
+		_ = e.store.UpdateStepRun(ctx, stepReview)
+		_ = e.store.InTx(ctx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageIndependentReview, StatusFailed, FailureFlawed))
+			return nil
+		})
+		return fmt.Errorf("factory: validate review.json: %w", valErr)
+	}
+
+	// Review step succeeded
+	stepReview.Status = StepStatusSuccess
+	codeReview := 0
+	stepReview.ExitCode = &codeReview
+	_ = e.store.UpdateStepRun(ctx, stepReview)
+
+	// 7. Checkpoint Review Artifact (REV-5)
+	headSHAReview, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "05_Independent_Review review.json")
+	if err != nil {
+		return fmt.Errorf("factory: review checkpoint: %w", err)
+	}
+	job.HeadSHA = headSHAReview
+
+	// 8. Build and Commit Evidence Summary (APR-1..4)
+	diffStat := ParseDiffStat(diffOutput)
+	// Refresh step runs including review step
+	allSteps, _ := e.store.ListStepRunsByJob(ctx, job.ID)
+	_, evidenceMD := BuildEvidence(job, allSteps, reviewReport, diffStat)
+	if err := e.wtMgr.WriteArtifact(ctx, job.WorktreePath, job.ID, "evidence.md", []byte(evidenceMD)); err != nil {
+		return fmt.Errorf("factory: write evidence.md: %w", err)
+	}
+
+	headSHAGate, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "06_Human_Approval_Gate evidence.md")
+	if err != nil {
+		return fmt.Errorf("factory: evidence checkpoint: %w", err)
+	}
+	job.HeadSHA = headSHAGate
+
+	// Update Job Head and transition to 06_Human_Approval_Gate / awaiting_approval
+	err = e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobHead(ctx, job.ID, headSHAGate); err != nil {
+			return err
+		}
+		if err := tx.UpdateJobState(ctx, job.ID, StageHumanApprovalGate, StatusAwaitingApproval); err != nil {
+			return err
+		}
+		if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageHumanApprovalGate)); err != nil {
+			return err
+		}
+		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageHumanApprovalGate, StatusAwaitingApproval))
+	})
+	if err != nil {
+		return fmt.Errorf("factory: transition to gate: %w", err)
+	}
+
+	job.Stage = StageHumanApprovalGate
+	job.Status = StatusAwaitingApproval
+	e.notifyWake()
+	return nil
+}
+
+// hasCodeModifications checks whether any files outside the metadata directory (.garagefab/)
+// were added, changed, or deleted in the worktree (REV-4).
+func hasCodeModifications(diff string) bool {
+	lines := strings.Split(diff, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "diff --git a/") {
+			parts := strings.Split(line, " ")
+			if len(parts) >= 3 {
+				path := strings.TrimPrefix(parts[2], "a/")
+				if !strings.HasPrefix(path, ".garagefab/") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// Approve records human approval and advances the job (SPC-6, SPC-7, APR-5, APR-7, DLV-4).
+// - At 02_Clarification_and_Spec / spec_review: re-validates spec.md, records SHA-256 hash, and advances to 04_Coding / queued (SPC-6).
+// - At 06_Human_Approval_Gate / awaiting_approval: verifies evidence HEAD SHA matches current worktree HEAD (APR-5) and advances to 07_Done.
 func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error {
 	job, err := e.store.GetJob(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("factory: get job %d: %w", jobID, err)
 	}
 
-	if job.Stage != StageHumanApprovalGate || job.Status != StatusAwaitingApproval {
-		return fmt.Errorf("%w: job %d is in %s/%s", ErrInvalidState, jobID, job.Stage, job.Status)
-	}
-
-	// Stale Evidence Check (APR-5): Reject approval if user approved outdated commit SHA
-	if headSHA != "" && job.HeadSHA != "" && headSHA != job.HeadSHA {
-		return fmt.Errorf("%w: provided %s, current %s", ErrStaleEvidence, headSHA, job.HeadSHA)
-	}
-
-	project, err := e.store.GetProject(ctx, job.ProjectID)
-	if err != nil {
-		return fmt.Errorf("factory: get project %d: %w", job.ProjectID, err)
-	}
-
-	// Persist approval and transition to StageDone/done (PIP-2)
-	err = e.store.InTx(ctx, func(tx StoreTx) error {
-		approval := &Approval{
-			JobID:    job.ID,
-			Gate:     ApprovalGateFinal,
-			Decision: ApprovalDecisionApprove,
-			HeadSHA:  job.HeadSHA,
+	// Case 1: Spec Review Gate (SPC-6, SPC-7)
+	if job.Stage == StageClarificationAndSpec && job.Status == StatusSpecReview {
+		specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md")
+		if err != nil {
+			return fmt.Errorf("factory: read spec.md: %w", err)
 		}
-		if err := tx.RecordApproval(ctx, approval); err != nil {
-			return err
+
+		// Re-validate spec as it is currently in the worktree
+		if err := ValidateSpec(string(specBytes), job.WorkType); err != nil {
+			return fmt.Errorf("%w: %v", ErrSpecInvalid, err)
 		}
-		if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusDone); err != nil {
-			return err
+
+		specHash := fmt.Sprintf("%x", sha256.Sum256(specBytes))
+
+		// Commit approved spec to worktree checkpoint (SPC-6)
+		newHeadSHA, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "approved spec.md")
+		if err != nil {
+			return fmt.Errorf("factory: checkpoint approved spec: %w", err)
 		}
-		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageDone, StatusDone))
-	})
-	if err != nil {
-		return fmt.Errorf("factory: record approval: %w", err)
+
+		err = e.store.InTx(ctx, func(tx StoreTx) error {
+			approval := &Approval{
+				JobID:    job.ID,
+				Gate:     ApprovalGateSpecReview,
+				Decision: ApprovalDecisionApprove,
+				Note:     fmt.Sprintf("spec_hash:%s", specHash),
+				HeadSHA:  newHeadSHA,
+			}
+			if err := tx.RecordApproval(ctx, approval); err != nil {
+				return err
+			}
+			if err := tx.UpdateJobHead(ctx, job.ID, newHeadSHA); err != nil {
+				return err
+			}
+			if err := tx.UpdateJobState(ctx, job.ID, StageCoding, StatusQueued); err != nil {
+				return err
+			}
+			if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageCoding)); err != nil {
+				return err
+			}
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageCoding, StatusQueued))
+		})
+		if err != nil {
+			return fmt.Errorf("factory: record spec approval: %w", err)
+		}
+
+		job.Stage = StageCoding
+		job.Status = StatusQueued
+		job.HeadSHA = newHeadSHA
+		e.notifyWake()
+		return nil
 	}
 
-	// Clean up worktree on delivery completion (DLV-4, WKT-6)
-	if job.WorktreePath != "" {
-		_ = e.wtMgr.Remove(ctx, project.RepoPath, job.WorktreePath, job.BranchName, false)
+	// Case 2: Final Gate (APR-5, APR-7)
+	if job.Stage == StageHumanApprovalGate && job.Status == StatusAwaitingApproval {
+		// Stale Evidence Check (APR-5): Reject approval if user approved outdated commit SHA
+		if headSHA != "" && job.HeadSHA != "" && headSHA != job.HeadSHA {
+			return fmt.Errorf("%w: provided %s, current %s", ErrStaleEvidence, headSHA, job.HeadSHA)
+		}
+		// Also verify worktree HEAD has not advanced past the evidence commit
+		if job.WorktreePath != "" {
+			currentHead, err := e.wtMgr.HeadSHA(ctx, job.WorktreePath)
+			if err == nil && currentHead != "" && job.HeadSHA != "" && currentHead != job.HeadSHA {
+				return fmt.Errorf("%w: worktree HEAD %s, evidence HEAD %s", ErrStaleEvidence, currentHead, job.HeadSHA)
+			}
+		}
+
+		project, err := e.store.GetProject(ctx, job.ProjectID)
+		if err != nil {
+			return fmt.Errorf("factory: get project %d: %w", job.ProjectID, err)
+		}
+
+		// Persist approval and transition to StageDone/done (PIP-2)
+		err = e.store.InTx(ctx, func(tx StoreTx) error {
+			approval := &Approval{
+				JobID:    job.ID,
+				Gate:     ApprovalGateFinal,
+				Decision: ApprovalDecisionApprove,
+				HeadSHA:  job.HeadSHA,
+			}
+			if err := tx.RecordApproval(ctx, approval); err != nil {
+				return err
+			}
+			if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusDone); err != nil {
+				return err
+			}
+			if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageDone)); err != nil {
+				return err
+			}
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageDone, StatusDone))
+		})
+		if err != nil {
+			return fmt.Errorf("factory: record approval: %w", err)
+		}
+
+		// Clean up worktree on delivery completion (DLV-4, WKT-6)
+		if job.WorktreePath != "" {
+			_ = e.wtMgr.Remove(ctx, project.RepoPath, job.WorktreePath, job.BranchName, false)
+		}
+
+		job.Stage = StageDone
+		job.Status = StatusDone
+		e.notifyWake()
+		return nil
 	}
 
-	e.notifyWake()
-	return nil
+	return fmt.Errorf("%w: job %d is in %s/%s", ErrInvalidState, jobID, job.Stage, job.Status)
 }
 
-// Reject records a human rejection note and moves the job back to 04_Coding/queued (APR-6).
+// Reject records a human rejection note and routes the job back for repair/re-spec (APR-6, COD-5, SPC-7).
 func (e *Engine) Reject(ctx context.Context, jobID int64, note string) error {
 	// Rejection note is mandatory (APR-6)
-	if note == "" {
+	if strings.TrimSpace(note) == "" {
 		return ErrEmptyRejectionNote
 	}
 
@@ -920,33 +1132,85 @@ func (e *Engine) Reject(ctx context.Context, jobID int64, note string) error {
 		return fmt.Errorf("factory: get job %d: %w", jobID, err)
 	}
 
-	if job.Stage != StageHumanApprovalGate || job.Status != StatusAwaitingApproval {
-		return fmt.Errorf("%w: job %d is in %s/%s", ErrInvalidState, jobID, job.Stage, job.Status)
+	// Count existing rejections to determine next rejection file number
+	rejectionNum := 1
+	if job.WorktreePath != "" {
+		artifacts, _ := e.wtMgr.ListArtifacts(ctx, job.WorktreePath, job.ID)
+		for _, art := range artifacts {
+			if strings.HasPrefix(art, "rejections/") {
+				rejectionNum++
+			}
+		}
+		// Write rejection artifact: .garagefab/jobs/<id>/rejections/<n>.md
+		rejContent := fmt.Sprintf("# Rejection Note %d\nDate: %s\n\n%s\n", rejectionNum, time.Now().UTC().Format(time.RFC3339), note)
+		_ = e.wtMgr.WriteArtifact(ctx, job.WorktreePath, job.ID, fmt.Sprintf("rejections/%d.md", rejectionNum), []byte(rejContent))
 	}
 
-	// Atomically record rejection and requeue the job back to Coding stage
-	err = e.store.InTx(ctx, func(tx StoreTx) error {
-		approval := &Approval{
-			JobID:    job.ID,
-			Gate:     ApprovalGateFinal,
-			Decision: ApprovalDecisionReject,
-			Note:     note,
-			HeadSHA:  job.HeadSHA,
+	// Case 1: Spec Review Rejection (SPC-7)
+	if job.Stage == StageClarificationAndSpec && job.Status == StatusSpecReview {
+		if job.WorktreePath != "" {
+			_, _ = e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "spec rejected")
 		}
-		if err := tx.RecordApproval(ctx, approval); err != nil {
-			return err
+		err = e.store.InTx(ctx, func(tx StoreTx) error {
+			approval := &Approval{
+				JobID:    job.ID,
+				Gate:     ApprovalGateSpecReview,
+				Decision: ApprovalDecisionReject,
+				Note:     note,
+				HeadSHA:  job.HeadSHA,
+			}
+			if err := tx.RecordApproval(ctx, approval); err != nil {
+				return err
+			}
+			if err := tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusQueued); err != nil {
+				return err
+			}
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageClarificationAndSpec, StatusQueued))
+		})
+		if err != nil {
+			return fmt.Errorf("factory: record spec rejection: %w", err)
 		}
-		if err := tx.UpdateJobState(ctx, job.ID, StageCoding, StatusQueued); err != nil {
-			return err
-		}
-		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageCoding, StatusQueued))
-	})
-	if err != nil {
-		return fmt.Errorf("factory: record rejection: %w", err)
+		job.Stage = StageClarificationAndSpec
+		job.Status = StatusQueued
+		e.notifyWake()
+		return nil
 	}
 
-	e.notifyWake()
-	return nil
+	// Case 2: Final Gate Rejection (APR-6, COD-5)
+	if job.Stage == StageHumanApprovalGate && job.Status == StatusAwaitingApproval {
+		if job.WorktreePath != "" {
+			_, _ = e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "rejected at gate")
+		}
+		err = e.store.InTx(ctx, func(tx StoreTx) error {
+			approval := &Approval{
+				JobID:    job.ID,
+				Gate:     ApprovalGateFinal,
+				Decision: ApprovalDecisionReject,
+				Note:     note,
+				HeadSHA:  job.HeadSHA,
+			}
+			if err := tx.RecordApproval(ctx, approval); err != nil {
+				return err
+			}
+			// Reset repair attempts counter to 0 (COD-5) and route to 04_Coding / queued
+			if err := tx.UpdateJobState(ctx, job.ID, StageCoding, StatusQueued); err != nil {
+				return err
+			}
+			if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageCoding)); err != nil {
+				return err
+			}
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageCoding, StatusQueued))
+		})
+		if err != nil {
+			return fmt.Errorf("factory: record rejection: %w", err)
+		}
+		job.Stage = StageCoding
+		job.Status = StatusQueued
+		e.notifyWake()
+		return nil
+	}
+
+	return fmt.Errorf("%w: job %d is in %s/%s", ErrInvalidState, jobID, job.Stage, job.Status)
 }
 
 // Cancel terminates a job in any non-terminal state and cleans up worktrees (PIP-6).
@@ -1025,4 +1289,80 @@ func (e *Engine) Retry(ctx context.Context, jobID int64) error {
 
 	e.notifyWake()
 	return nil
+}
+
+// GetArtifact retrieves a named job artifact from the worktree (LOG-3).
+// Supported names: intent, clarification-questions, clarification, spec, probe, review, evidence.
+func (e *Engine) GetArtifact(ctx context.Context, jobID int64, name string) ([]byte, error) {
+	job, err := e.store.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("factory: get job %d: %w", jobID, err)
+	}
+	if job.WorktreePath == "" {
+		return nil, fmt.Errorf("factory: worktree not found for job %d", jobID)
+	}
+
+	filename := name
+	switch name {
+	case "intent":
+		filename = "intent.md"
+	case "clarification-questions":
+		filename = "clarification-questions.md"
+	case "clarification":
+		filename = "clarification.md"
+	case "spec":
+		filename = "spec.md"
+	case "probe":
+		filename = "probe.md"
+	case "review":
+		filename = "review.json"
+	case "evidence":
+		filename = "evidence.md"
+	}
+
+	return e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, filename)
+}
+
+// GetDiff retrieves the unified diff from the merge base for a job (WKT-3, APR-2).
+func (e *Engine) GetDiff(ctx context.Context, jobID int64) (string, error) {
+	job, err := e.store.GetJob(ctx, jobID)
+	if err != nil {
+		return "", fmt.Errorf("factory: get job %d: %w", jobID, err)
+	}
+	if job.WorktreePath == "" {
+		return "", fmt.Errorf("factory: worktree not found for job %d", jobID)
+	}
+
+	return e.wtMgr.Diff(ctx, job.WorktreePath, job.BaseSHA)
+}
+
+// GetEvidence compiles and returns the structured chain of evidence summary for a job (APR-1..3).
+// Pure read: synthesized only from stored artifacts and step records without running any subprocesses.
+func (e *Engine) GetEvidence(ctx context.Context, jobID int64) (*EvidenceSummary, error) {
+	job, err := e.store.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("factory: get job %d: %w", jobID, err)
+	}
+
+	steps, err := e.store.ListStepRunsByJob(ctx, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("factory: get step runs for job %d: %w", jobID, err)
+	}
+
+	var reviewReport *ReviewReport
+	if job.WorktreePath != "" {
+		if reviewBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "review.json"); err == nil {
+			reviewReport, _ = ValidateReviewJSON(reviewBytes)
+		}
+	}
+
+	var diffStat *DiffStat
+	if job.WorktreePath != "" {
+		if diffText, err := e.wtMgr.Diff(ctx, job.WorktreePath, job.BaseSHA); err == nil {
+			diffStat = ParseDiffStat(diffText)
+		}
+	}
+
+	summary, _ := BuildEvidence(job, steps, reviewReport, diffStat)
+	return summary, nil
 }

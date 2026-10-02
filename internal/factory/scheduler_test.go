@@ -94,6 +94,10 @@ func (f *fakeStoreForScheduler) UpdateStepRun(ctx context.Context, step *StepRun
 	return nil
 }
 
+func (f *fakeStoreForScheduler) ListStepRunsByJob(ctx context.Context, jobID int64) ([]*StepRun, error) {
+	return nil, nil
+}
+
 func (f *fakeStoreForScheduler) CreateProcessRecord(ctx context.Context, stepRunID int64, pid, pgid int, startTime int64) error {
 	return nil
 }

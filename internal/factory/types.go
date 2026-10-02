@@ -241,6 +241,7 @@ type Store interface {
 	CountRunningJobsByProject(ctx context.Context, projectID int64) (int, error)
 	CreateStepRun(ctx context.Context, step *StepRun) error
 	UpdateStepRun(ctx context.Context, step *StepRun) error
+	ListStepRunsByJob(ctx context.Context, jobID int64) ([]*StepRun, error)
 	CreateProcessRecord(ctx context.Context, stepRunID int64, pid, pgid int, startTime int64) error
 	MarkProcessInactive(ctx context.Context, processRecordID int64) error
 

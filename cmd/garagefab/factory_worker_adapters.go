@@ -101,6 +101,26 @@ func (a *factoryWorktreeAdapter) HeadSHA(ctx context.Context, worktreePath strin
 	return a.mgr.HeadSHA(ctx, worktreePath)
 }
 
+// WriteArtifact writes an artifact file inside the job's dedicated artifact directory (LOG-3).
+func (a *factoryWorktreeAdapter) WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error {
+	return a.mgr.WriteArtifact(ctx, worktreePath, jobID, filename, content)
+}
+
+// ReadArtifact reads an artifact file from the job's dedicated artifact directory (LOG-3).
+func (a *factoryWorktreeAdapter) ReadArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) ([]byte, error) {
+	return a.mgr.ReadArtifact(ctx, worktreePath, jobID, filename)
+}
+
+// RemoveArtifact removes an artifact file from the job's dedicated artifact directory (LOG-3).
+func (a *factoryWorktreeAdapter) RemoveArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) error {
+	return a.mgr.RemoveArtifact(ctx, worktreePath, jobID, filename)
+}
+
+// ListArtifacts returns a list of relative artifact file names in the job's artifact directory (LOG-3).
+func (a *factoryWorktreeAdapter) ListArtifacts(ctx context.Context, worktreePath string, jobID int64) ([]string, error) {
+	return a.mgr.ListArtifacts(ctx, worktreePath, jobID)
+}
+
 // ------------------------------------------------------------------------------
 // Agent Runner Adapter
 // ------------------------------------------------------------------------------

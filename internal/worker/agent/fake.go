@@ -115,7 +115,7 @@ func (f *FakeRunner) Run(ctx context.Context, req AgentRequest) (*AgentResult, e
 		case "both":
 			// Write both files (violates SPC-1)
 			_ = os.WriteFile(filepath.Join(artifactDir, "clarification-questions.md"), []byte("Q1. Ambiguous question?\n"), 0644)
-			validSpec := fmt.Sprintf("# Feature Spec\n\n## Summary\nSummary.\n\n## Goals and Non-Goals\nGoals.\n\n## Design\nDesign.\n\n## Acceptance Criteria\nGiven A When B Then AC-1: Pass.\n\n## Implementation Plan\n1. Work (AC-1)\n\n## Test Plan\nTests.\n\n## Risks and Assumptions\nNone.\n")
+			validSpec := "# Feature Spec\n\n## Summary\nSummary.\n\n## Goals and Non-Goals\nGoals.\n\n## Design\nDesign.\n\n## Acceptance Criteria\nGiven A When B Then AC-1: Pass.\n\n## Implementation Plan\n1. Work (AC-1)\n\n## Test Plan\nTests.\n\n## Risks and Assumptions\nNone.\n"
 			_ = os.WriteFile(filepath.Join(artifactDir, "spec.md"), []byte(validSpec), 0644)
 			return &AgentResult{ExitCode: 0, Summary: "Fake agent output both files"}, nil
 

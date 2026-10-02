@@ -78,6 +78,28 @@ func (m *mockEngine) SubmitClarification(ctx context.Context, jobID int64, answe
 	return m.clarificationErr
 }
 
+func (m *mockEngine) GetEvidence(ctx context.Context, jobID int64) (*factory.EvidenceSummary, error) {
+	return &factory.EvidenceSummary{
+		JobID:          jobID,
+		HeadSHA:        "head-evidence-123",
+		ReviewDecision: "approve",
+	}, nil
+}
+
+func (m *mockEngine) GetArtifact(ctx context.Context, jobID int64, name string) ([]byte, error) {
+	if name == "spec" || name == "spec.md" {
+		return []byte("# Spec Content"), nil
+	}
+	if name == "review" || name == "review.json" {
+		return []byte(`{"decision":"approve"}`), nil
+	}
+	return []byte("artifact content"), nil
+}
+
+func (m *mockEngine) GetDiff(ctx context.Context, jobID int64) (string, error) {
+	return "diff --git a/main.go b/main.go", nil
+}
+
 type mockScheduler struct {
 	wakeCount int
 }
@@ -535,7 +557,73 @@ func TestClarificationAPI_SPC3(t *testing.T) {
 	}
 }
 
-func init() {
-	// Ensure buffer unused error does not happen
-	_ = bytes.NewBuffer(nil)
+// TestEvidenceAndArtifactAPIs_APR1_APR3_LOG3 tests requirement APR-1, APR-2, APR-3, and LOG-3:
+// - GET /api/jobs/{id}/evidence serves structured JSON summary (APR-1, APR-3)
+// - GET /api/jobs/{id}/artifacts/{name} serves raw artifacts (LOG-3)
+// - GET /api/jobs/{id}/diff serves diff output (APR-2)
+func TestEvidenceAndArtifactAPIs_APR1_APR3_LOG3(t *testing.T) {
+	srv, _, _, _ := setupTestServer(t)
+
+	// 1. GET /api/jobs/1/evidence with Bearer token
+	req := httptest.NewRequest("GET", "/api/jobs/1/evidence", nil)
+	req.Host = "127.0.0.1:7878"
+	req.Header.Set("Authorization", "Bearer test-secret-token")
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /evidence, got %d: %s", w.Code, w.Body.String())
+	}
+	var evidence factory.EvidenceSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &evidence); err != nil {
+		t.Fatalf("failed to decode evidence JSON: %v", err)
+	}
+	if evidence.JobID != 1 || evidence.HeadSHA != "head-evidence-123" {
+		t.Errorf("unexpected evidence payload: %+v", evidence)
+	}
+
+	// 2. GET /api/jobs/1/artifacts/spec with Bearer token
+	req = httptest.NewRequest("GET", "/api/jobs/1/artifacts/spec", nil)
+	req.Host = "127.0.0.1:7878"
+	req.Header.Set("Authorization", "Bearer test-secret-token")
+	w = httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /artifacts/spec, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "# Spec Content") {
+		t.Errorf("expected spec artifact content, got: %s", w.Body.String())
+	}
+	if w.Header().Get("Content-Type") != "text/markdown; charset=utf-8" {
+		t.Errorf("expected text/markdown Content-Type, got: %s", w.Header().Get("Content-Type"))
+	}
+
+	// 3. GET /api/jobs/1/artifacts/review (JSON content type)
+	req = httptest.NewRequest("GET", "/api/jobs/1/artifacts/review", nil)
+	req.Host = "127.0.0.1:7878"
+	req.Header.Set("Authorization", "Bearer test-secret-token")
+	w = httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /artifacts/review, got %d", w.Code)
+	}
+	if w.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Errorf("expected application/json Content-Type, got: %s", w.Header().Get("Content-Type"))
+	}
+
+	// 4. GET /api/jobs/1/diff
+	req = httptest.NewRequest("GET", "/api/jobs/1/diff", nil)
+	req.Host = "127.0.0.1:7878"
+	req.Header.Set("Authorization", "Bearer test-secret-token")
+	w = httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /diff, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "diff --git") {
+		t.Errorf("expected git diff text, got: %s", w.Body.String())
+	}
 }
