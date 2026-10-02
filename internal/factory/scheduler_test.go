@@ -11,6 +11,7 @@ package factory
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -35,7 +36,7 @@ func (f *fakeStoreForScheduler) GetJob(ctx context.Context, id int64) (*Job, err
 }
 
 func (f *fakeStoreForScheduler) GetProject(ctx context.Context, id int64) (*Project, error) {
-	return &Project{ID: 1, Name: "p"}, nil
+	return &Project{ID: id, Name: fmt.Sprintf("p%d", id), RepoPath: fmt.Sprintf("/repo/%d", id)}, nil
 }
 
 func (f *fakeStoreForScheduler) GetNextQueuedJob(ctx context.Context) (*Job, error) {
@@ -176,5 +177,61 @@ func TestScheduler_MultiAdmit_NoStarvation_SCH3(t *testing.T) {
 	// With the fix, Job 202 must be loaded into runningJobs!
 	if _, ok := scheduler.runningJobs.Load(int64(202)); !ok {
 		t.Errorf("Job 202 was starved: scheduler broke loop instead of admitting subsequent candidate")
+	}
+}
+
+type fakeProjectConfigProvider struct {
+	configs map[string]*ProjectConfig
+}
+
+func (f *fakeProjectConfigProvider) GetProjectConfig(ctx context.Context, repoPath string) (*ProjectConfig, error) {
+	if cfg, ok := f.configs[repoPath]; ok {
+		return cfg, nil
+	}
+	return nil, nil
+}
+
+// TestScheduler_ProjectConcurrencyLimit_SCH2 verifies requirement SCH-2:
+// An optional project-level limits.max_concurrent_jobs further limits that project
+// without blocking other projects from using free global slots.
+func TestScheduler_ProjectConcurrencyLimit_SCH2(t *testing.T) {
+	ctx := context.Background()
+
+	store := &fakeStoreForScheduler{
+		jobs: map[int64]*Job{
+			301: {ID: 301, ProjectID: 1, Status: StatusQueued, Title: "Job 301 - Proj 1"},
+			302: {ID: 302, ProjectID: 1, Status: StatusQueued, Title: "Job 302 - Proj 1"},
+			303: {ID: 303, ProjectID: 2, Status: StatusQueued, Title: "Job 303 - Proj 2"},
+		},
+	}
+
+	engine := NewEngine(store, &fakeWorktreeManager{}, &fakeAgentRunner{}, nil, t.TempDir())
+	scheduler := NewScheduler(store, engine, 5) // Global limit is 5
+
+	// Configure Project 1 with limit 1, Project 2 with no limit
+	projProvider := &fakeProjectConfigProvider{
+		configs: map[string]*ProjectConfig{
+			"/repo/1": {MaxConcurrentJobs: 1},
+			"/repo/2": {MaxConcurrentJobs: 0},
+		},
+	}
+	scheduler.SetProjectConfigProvider(projProvider)
+
+	// Trigger admission cycle
+	scheduler.scheduleNext(ctx)
+
+	// Job 301 (Proj 1) should be admitted
+	if _, ok := scheduler.runningJobs.Load(int64(301)); !ok {
+		t.Errorf("expected Job 301 to be admitted")
+	}
+
+	// Job 302 (Proj 1) should NOT be admitted because Proj 1 limit is 1
+	if _, ok := scheduler.runningJobs.Load(int64(302)); ok {
+		t.Errorf("Job 302 should have been deferred due to project limit (SCH-2)")
+	}
+
+	// Job 303 (Proj 2) SHOULD be admitted (not blocked by Proj 1's limit)
+	if _, ok := scheduler.runningJobs.Load(int64(303)); !ok {
+		t.Errorf("expected Job 303 (Proj 2) to be admitted while Proj 1 is capped")
 	}
 }
