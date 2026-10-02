@@ -50,7 +50,8 @@
 | M1 | Completed |
 | M2 | Completed |
 | M3 | Completed |
-| M4–M8, SB | Not started |
+| M4 | Planning complete (Ready for review) |
+| SB, M5–M8 | Not started |
 
 ## 4. Milestones
 
