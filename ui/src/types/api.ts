@@ -126,6 +126,45 @@ export interface EvidenceSummary {
   warnings?: string[];
 }
 
+export interface ReviewRiskItem {
+  score: number;
+  rationale: string;
+}
+
+export interface ReviewRisk {
+  side_effect: ReviewRiskItem;
+  performance: ReviewRiskItem;
+  backward_compatibility: ReviewRiskItem;
+}
+
+export interface ReviewFinding {
+  severity: string;
+  file: string;
+  line: number;
+  description: string;
+}
+
+export interface ReviewWarning {
+  file: string;
+  description: string;
+}
+
+export interface ReviewCoverage {
+  criterion: string;
+  status: string;
+  note: string;
+}
+
+export interface ReviewReport {
+  schema_version: number;
+  decision: string;
+  summary: string;
+  risk: ReviewRisk;
+  findings: ReviewFinding[];
+  warnings: ReviewWarning[];
+  spec_coverage: ReviewCoverage[];
+}
+
 export interface ApiError {
   error: {
     code: string;

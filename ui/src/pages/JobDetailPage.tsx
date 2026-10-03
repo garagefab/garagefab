@@ -10,15 +10,17 @@ import {
   ShieldCheck,
   FileDiff,
   HelpCircle,
+  ShieldAlert,
 } from 'lucide-react';
-import { Job, StepRun, EvidenceSummary } from '../types/api';
-import { apiFetch, apiFetchText } from '../lib/api';
+import { Job, StepRun, EvidenceSummary, ReviewReport } from '../types/api';
+import { apiFetch, apiFetchText, ApiRequestError } from '../lib/api';
 import { Link, useRouter } from '../lib/router';
 import { JobActions } from '../components/JobActions';
 import { PipelineVisualizer } from '../components/PipelineVisualizer';
 import { ClarificationForm } from '../components/ClarificationForm';
 import { MarkdownViewer } from '../components/MarkdownViewer';
 import { EvidenceSection } from '../components/EvidenceSection';
+import { ReviewReportView } from '../components/ReviewReportView';
 import { DiffViewer } from '../components/DiffViewer';
 import { useSSE } from '../hooks/useSSE';
 
@@ -34,11 +36,30 @@ export function JobDetailPage({ jobId, onOpenLogs }: JobDetailPageProps) {
   const [stepRuns, setStepRuns] = useState<StepRun[]>([]);
   const [specContent, setSpecContent] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<EvidenceSummary | null>(null);
+  const [review, setReview] = useState<ReviewReport | null>(null);
+  const [reviewLoaded, setReviewLoaded] = useState(false);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'spec' | 'evidence' | 'diff' | 'intent'>('spec');
+  const [activeTab, setActiveTab] = useState<'spec' | 'evidence' | 'review' | 'diff' | 'intent'>('spec');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Determine if review stage has completed and a review report is available (APR-2 / UI-8)
+  const hasReview = Boolean(
+    (evidence?.review_decision && evidence.review_decision !== 'unknown' && evidence.review_decision !== 'Pending') ||
+    stepRuns.some((s) => (s.kind === 'review' || s.stage === '05_Independent_Review') && s.status === 'completed') ||
+    job?.stage === '06_Human_Approval_Gate' ||
+    job?.stage === '07_Done'
+  );
+
+  // Fallback to spec tab if review tab was selected but review is not applicable
+  useEffect(() => {
+    if (activeTab === 'review' && !hasReview && !loading) {
+      setActiveTab('spec');
+    }
+  }, [activeTab, hasReview, loading]);
 
   const loadJobData = useCallback(async () => {
     try {
@@ -87,6 +108,30 @@ export function JobDetailPage({ jobId, onOpenLogs }: JobDetailPageProps) {
   useEffect(() => {
     loadJobData();
   }, [loadJobData]);
+
+  // Lazy review fetch: only when Review tab is selected (LOG-5, APR-2)
+  useEffect(() => {
+    if (activeTab !== 'review' || reviewLoaded) return;
+    setReviewLoading(true);
+    setReviewError(null);
+    apiFetch<ReviewReport>(`/api/jobs/${jobId}/artifacts/review`)
+      .then((data) => {
+        setReview(data);
+      })
+      .catch((err) => {
+        setReview(null);
+        if (err instanceof ApiRequestError && err.status === 404) {
+          // Expected when review artifact is not yet written
+          setReviewError(null);
+        } else {
+          setReviewError(err?.message || 'Failed to load review report');
+        }
+      })
+      .finally(() => {
+        setReviewLoaded(true);
+        setReviewLoading(false);
+      });
+  }, [activeTab, reviewLoaded, jobId]);
 
   // Live SSE listener: auto-update job details on pipeline events (UI-5)
   useSSE(loadJobData);
@@ -269,6 +314,22 @@ export function JobDetailPage({ jobId, onOpenLogs }: JobDetailPageProps) {
             {evidence && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />}
           </button>
 
+          {hasReview && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('review')}
+              className={`flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-t-xl transition-colors cursor-pointer ${
+                activeTab === 'review'
+                  ? 'bg-slate-900 text-white border-t border-x border-slate-800'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <ShieldAlert className="h-3.5 w-3.5" />
+              <span>Review Report</span>
+              {review && <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setActiveTab('diff')}
@@ -314,12 +375,22 @@ export function JobDetailPage({ jobId, onOpenLogs }: JobDetailPageProps) {
           {activeTab === 'evidence' && (
             <div>
               {evidence ? (
-                <EvidenceSection evidence={evidence} onViewDiff={() => setActiveTab('diff')} />
+                <EvidenceSection
+                  evidence={evidence}
+                  onViewDiff={() => setActiveTab('diff')}
+                  onViewReview={hasReview ? () => setActiveTab('review') : undefined}
+                />
               ) : (
                 <div className="p-6 text-center text-xs text-slate-400">
                   Verification evidence is compiled during the review stage.
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'review' && (
+            <div>
+              <ReviewReportView report={review} loading={reviewLoading} error={reviewError} />
             </div>
           )}
 
