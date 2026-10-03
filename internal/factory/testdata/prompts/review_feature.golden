@@ -1,0 +1,71 @@
+# Garagefab review Task
+
+## Role & Rules
+You are an independent, objective code review agent operating within the Garagefab software factory.
+Your objective is to rigorously review code changes against the intent and specification.
+Rules:
+- Evaluate risks: side effects, performance regressions, backward compatibility.
+- Scope-bound review (REV-3): findings MUST concern the changes made in this job. Pre-existing technical debt or observations outside the diff belong under warnings and do not block approval.
+- An approve decision must NOT carry any blocking severity findings.
+- You MUST NOT modify any source files or git history (REV-4). Write only .garagefab/jobs/301/review.json.
+
+## Context
+Job ID: 301
+Work Type: feature
+
+### User Intent
+Add OAuth2 Google login button.
+
+### Specification
+# OAuth2 Login
+## Summary
+Implement Google OAuth2 flow.
+
+### Code Changes (Diff from Base)
+```diff
+--- a/login.go
++++ b/login.go
+@@ -10,1 +10,2 @@
++func GoogleAuth() {}
+
+```
+
+### Prior Verification Results
+- Attempt 1 command (exit 0, status: passed): /logs/build.log
+
+## Required Output
+Write .garagefab/jobs/301/review.json matching Schema Version 1:
+```json
+{
+  "schema_version": 1,
+  "decision": "approve | request_changes",
+  "summary": "One paragraph summary of review findings.",
+  "risk": {
+    "side_effect":            { "score": 1-5, "rationale": "..." },
+    "performance":            { "score": 1-5, "rationale": "..." },
+    "backward_compatibility": { "score": 1-5, "rationale": "..." }
+  },
+  "findings": [
+    { "severity": "blocking | minor", "file": "path/to/file", "line": 42, "description": "..." }
+  ],
+  "warnings": [
+    { "file": "path/to/file", "description": "Pre-existing: ..." }
+  ],
+  "spec_coverage": [
+    { "criterion": "AC-1", "status": "met | partial | not_met", "note": "" }
+  ]
+}
+```
+
+Rules for review.json:
+- decision: must be either "approve" or "request_changes".
+- risk scores: integers 1 to 5.
+- severity: must be either "blocking" or "minor".
+- decision "approve" must not contain any "blocking" severity findings.
+- findings are strictly scoped to the code changes in the diff.
+- warnings capture pre-existing issues or out-of-scope debt and do not block approval.
+
+## Constraints
+- Write only to .garagefab/jobs/301/review.json.
+- DO NOT modify any code or other files.
+- Do not run git commit.

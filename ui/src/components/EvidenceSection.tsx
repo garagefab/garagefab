@@ -1,10 +1,20 @@
 import { useState } from 'react';
-import { ShieldCheck, ShieldAlert, AlertTriangle, CheckCircle2, XCircle, MinusCircle, FileDiff } from 'lucide-react';
+import {
+  ShieldCheck,
+  ShieldAlert,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  MinusCircle,
+  FileDiff,
+  ArrowRight,
+} from 'lucide-react';
 import { EvidenceSummary } from '../types/api';
 
 interface EvidenceSectionProps {
   evidence: EvidenceSummary;
   onViewDiff?: () => void;
+  onViewReview?: () => void;
 }
 
 function getCheckBadge(status: string) {
@@ -30,7 +40,7 @@ function getCheckBadge(status: string) {
   }
 }
 
-export function EvidenceSection({ evidence, onViewDiff }: EvidenceSectionProps) {
+export function EvidenceSection({ evidence, onViewDiff, onViewReview }: EvidenceSectionProps) {
   const [warningsOpen, setWarningsOpen] = useState(false);
 
   const buildBadge = getCheckBadge(evidence.build_status);
@@ -69,21 +79,25 @@ export function EvidenceSection({ evidence, onViewDiff }: EvidenceSectionProps) 
           </div>
         </div>
 
-        {/* Review Warnings Badge (UI-8) */}
+        {/* Review Warnings Badge (UI-8 / APR-2) */}
         {warningsCount > 0 && (
           <button
             type="button"
-            onClick={() => setWarningsOpen(!warningsOpen)}
-            className="inline-flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 transition-colors cursor-pointer"
+            onClick={onViewReview ? onViewReview : () => setWarningsOpen(!warningsOpen)}
+            title={onViewReview ? 'View full review report' : 'Toggle review warnings'}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 hover:text-amber-200 transition-colors cursor-pointer group"
           >
             <AlertTriangle className="h-4 w-4 text-amber-400" />
             <span>⚠️ {warningsCount} Review {warningsCount === 1 ? 'Warning' : 'Warnings'}</span>
+            {onViewReview && (
+              <ArrowRight className="h-3.5 w-3.5 text-amber-400/80 group-hover:translate-x-0.5 transition-transform" />
+            )}
           </button>
         )}
       </div>
 
-      {/* Warnings Panel (collapsible per UI-8) */}
-      {warningsOpen && evidence.warnings && evidence.warnings.length > 0 && (
+      {/* Fallback Collapsible Warnings Panel (when standalone without tab navigation) */}
+      {!onViewReview && warningsOpen && evidence.warnings && evidence.warnings.length > 0 && (
         <div
           role="region"
           aria-label="Review warnings list"
@@ -138,16 +152,28 @@ export function EvidenceSection({ evidence, onViewDiff }: EvidenceSectionProps) 
           <span className="text-rose-400 font-mono">-{evidence.deletions}</span>
         </div>
 
-        {onViewDiff && (
-          <button
-            type="button"
-            onClick={onViewDiff}
-            className="inline-flex items-center gap-1.5 text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
-          >
-            <FileDiff className="h-3.5 w-3.5" />
-            <span>Inspect Diff</span>
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {onViewReview && (
+            <button
+              type="button"
+              onClick={onViewReview}
+              className="inline-flex items-center gap-1.5 text-amber-400 hover:text-amber-300 transition-colors font-medium cursor-pointer"
+            >
+              <ShieldAlert className="h-3.5 w-3.5" />
+              <span>Full Review Report</span>
+            </button>
+          )}
+          {onViewDiff && (
+            <button
+              type="button"
+              onClick={onViewDiff}
+              className="inline-flex items-center gap-1.5 text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
+            >
+              <FileDiff className="h-3.5 w-3.5" />
+              <span>Inspect Diff</span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

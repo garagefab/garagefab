@@ -191,10 +191,13 @@ type WorktreeManager interface {
 type AgentRequest struct {
 	JobID          int64
 	Stage          string
+	Role           string
+	Agent          string
 	WorktreePath   string
 	Prompt         string
 	ProjectName    string
 	LogPath        string
+	Timeout        time.Duration
 	OnProcessStart func(pid, pgid int, startTime int64)
 }
 
@@ -203,6 +206,7 @@ type AgentResult struct {
 	ExitCode     int
 	ArtifactPath string
 	Summary      string
+	TimedOut     bool
 }
 
 // AgentRunner defines the outbound port for AI agent execution.
@@ -286,6 +290,8 @@ type ProjectGuardrails struct {
 // ProjectConfig defines per-project configuration loaded from `<repo>/.garagefab/project.yaml`.
 type ProjectConfig struct {
 	BaseRef           string            `yaml:"base_ref"`
+	Agents            map[string]string `yaml:"agents"`
+	AgentTimeout      time.Duration     `yaml:"agent_timeout"`
 	Commands          ProjectCommands   `yaml:"commands"`
 	Guardrails        ProjectGuardrails `yaml:"guardrails"`
 	MaxConcurrentJobs int               `yaml:"max_concurrent_jobs"`

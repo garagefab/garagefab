@@ -51,6 +51,7 @@ export interface Job {
   base_sha: string;
   head_sha: string;
   pr_url: string;
+  handoff_command?: string;
   created_at: string;
   updated_at: string;
 }
@@ -123,6 +124,45 @@ export interface EvidenceSummary {
   deletions: number;
   drill_downs?: Record<string, string>;
   warnings?: string[];
+}
+
+export interface ReviewRiskItem {
+  score: number;
+  rationale: string;
+}
+
+export interface ReviewRisk {
+  side_effect: ReviewRiskItem;
+  performance: ReviewRiskItem;
+  backward_compatibility: ReviewRiskItem;
+}
+
+export interface ReviewFinding {
+  severity: string;
+  file: string;
+  line: number;
+  description: string;
+}
+
+export interface ReviewWarning {
+  file: string;
+  description: string;
+}
+
+export interface ReviewCoverage {
+  criterion: string;
+  status: string;
+  note: string;
+}
+
+export interface ReviewReport {
+  schema_version: number;
+  decision: string;
+  summary: string;
+  risk: ReviewRisk;
+  findings: ReviewFinding[];
+  warnings: ReviewWarning[];
+  spec_coverage: ReviewCoverage[];
 }
 
 export interface ApiError {

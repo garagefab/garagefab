@@ -43,6 +43,9 @@ make ci
 
 # Check version
 ./bin/garagefab version
+
+# Install garagefab-work skill for agy & opencode
+./bin/garagefab install-skills
 ```
 
 ## Documentation

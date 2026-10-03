@@ -1,6 +1,6 @@
 # SB — Spike B: GitHub
 
-> Status: **Not started**
+> Status: **Draft (docs-only; experiments pending)**
 > Size: S · Depends on: —
 > Unblocks: M6, `architecture.md` §12, `spec.md` OQ-1 and OQ-14
 

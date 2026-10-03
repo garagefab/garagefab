@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -53,14 +54,15 @@ var (
 
 // Engine orchestrates pipeline execution across stages (PIP-1..5).
 type Engine struct {
-	store             Store                 // Persistence port
-	wtMgr             WorktreeManager       // Worktree lifecycle port
-	agentRunner       AgentRunner           // AI agent execution port
-	cmdRunner         CommandRunner         // Command runner port
-	guardrailRunner   GuardrailRunner       // Guardrail runner port (GRD-1..4)
-	projCfgProvider   ProjectConfigProvider // Project configuration loader (architecture.md §14)
-	maxRepairAttempts int                   // Maximum automated repair loop attempts (default 3, COD-4)
-	logBaseDir        string                // Base path on disk for step logs (~/.garagefab/logs)
+	store               Store                 // Persistence port
+	wtMgr               WorktreeManager       // Worktree lifecycle port
+	agentRunner         AgentRunner           // AI agent execution port
+	cmdRunner           CommandRunner         // Command runner port
+	guardrailRunner     GuardrailRunner       // Guardrail runner port (GRD-1..4)
+	projCfgProvider     ProjectConfigProvider // Project configuration loader (architecture.md §14)
+	maxRepairAttempts   int                   // Maximum automated repair loop attempts (default 3, COD-4)
+	defaultAgentTimeout time.Duration         // Default timeout boundary for AI agent steps (COD-10)
+	logBaseDir          string                // Base path on disk for step logs (~/.garagefab/logs)
 
 	executingJobs    sync.Map // Thread-safe set tracking actively executing job IDs (PIP-5)
 	activeJobCancels sync.Map // Map[int64]context.CancelFunc for terminating active jobs (PIP-6)
@@ -70,12 +72,20 @@ type Engine struct {
 // NewEngine creates a new pipeline engine instance with injected port dependencies.
 func NewEngine(store Store, wtMgr WorktreeManager, agentRunner AgentRunner, cmdRunner CommandRunner, logBaseDir string) *Engine {
 	return &Engine{
-		store:             store,
-		wtMgr:             wtMgr,
-		agentRunner:       agentRunner,
-		cmdRunner:         cmdRunner,
-		maxRepairAttempts: 3,
-		logBaseDir:        logBaseDir,
+		store:               store,
+		wtMgr:               wtMgr,
+		agentRunner:         agentRunner,
+		cmdRunner:           cmdRunner,
+		maxRepairAttempts:   3,
+		defaultAgentTimeout: 30 * time.Minute,
+		logBaseDir:          logBaseDir,
+	}
+}
+
+// SetDefaultAgentTimeout configures the fallback timeout boundary for AI agent steps (COD-10).
+func (e *Engine) SetDefaultAgentTimeout(d time.Duration) {
+	if d > 0 {
+		e.defaultAgentTimeout = d
 	}
 }
 
@@ -142,6 +152,12 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	if projCfg == nil {
 		projCfg = &ProjectConfig{
 			BaseRef: project.BaseRef,
+			Agents: map[string]string{
+				RoleSpec:   "fake",
+				RoleProbe:  "fake",
+				RoleCoding: "fake",
+				RoleReview: "fake",
+			},
 		}
 		projCfg.Guardrails.ProtectedPaths = []string{"**/*_test.go"}
 	}
@@ -292,22 +308,63 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 			return fmt.Errorf("factory: create spec step run: %w", err)
 		}
 
-		// Prompt construction (SPC-1): Intent + any clarification.md
-		prompt := fmt.Sprintf("# Intent\n%s", job.Intent)
+		// Prompt construction (SPC-1, SPC-2): Render standardized spec prompt
+		var clarificationContent string
 		if clarData, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "clarification.md"); err == nil && len(clarData) > 0 {
-			prompt = fmt.Sprintf("%s\n\n# Clarification History\n%s", prompt, string(clarData))
+			clarificationContent = string(clarData)
 		}
-		if repairFeedback != "" {
-			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", prompt, repairFeedback)
+
+		promptData := PromptData{
+			JobID:          job.ID,
+			WorkType:       job.WorkType,
+			Intent:         job.Intent,
+			ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
+			Clarification:  clarificationContent,
+			RepairFeedback: repairFeedback,
+		}
+		prompt, err := RenderPrompt(RoleSpec, promptData)
+		if err != nil {
+			return fmt.Errorf("factory: render spec prompt: %w", err)
+		}
+
+		// Resolve role, agent, and step timeout (HND-2, COD-10)
+		role, _ := RoleForStage(StageClarificationAndSpec)
+		stepTimeout := e.defaultAgentTimeout
+		if projCfg != nil && projCfg.AgentTimeout > 0 {
+			stepTimeout = projCfg.AgentTimeout
+		}
+		agentName := ""
+		if projCfg != nil {
+			agentName = projCfg.AgentForRole(role)
+		}
+		if agentName == "" && os.Getenv("GARAGEFAB_FAKE_AGENT") == "1" {
+			agentName = "fake"
+		}
+		if agentName == "" {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			now := time.Now().UTC()
+			step.EndedAt = &now
+			_ = e.store.UpdateStepRun(ctx, step)
+			errMsg := fmt.Sprintf("no agent configured for role %q (set agents.%s in .garagefab/project.yaml)", role, role)
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, StageClarificationAndSpec, StatusFailed, FailureBlocked, errMsg))
+				return nil
+			})
+			return fmt.Errorf("factory: %s", errMsg)
 		}
 
 		res, err := e.agentRunner.Run(ctx, AgentRequest{
 			JobID:        job.ID,
 			Stage:        StageClarificationAndSpec,
+			Role:         role,
+			Agent:        agentName,
 			WorktreePath: job.WorktreePath,
 			Prompt:       prompt,
 			ProjectName:  project.Name,
 			LogPath:      logPath,
+			Timeout:      stepTimeout,
 			OnProcessStart: func(pid, pgid int, startTime int64) {
 				_ = e.store.CreateProcessRecord(ctx, step.ID, pid, pgid, startTime)
 			},
@@ -318,6 +375,24 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		// Handle agent process timeout (COD-10)
+		if res != nil && res.TimedOut {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			code := 1
+			if res != nil {
+				code = res.ExitCode
+			}
+			step.ExitCode = &code
+			_ = e.store.UpdateStepRun(ctx, step)
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageClarificationAndSpec, StatusFailed, FailureBlocked))
+				return nil
+			})
+			return fmt.Errorf("factory: spec agent timed out: %s", FailureBlocked)
 		}
 
 		if err != nil || (res != nil && res.ExitCode != 0) {
@@ -489,30 +564,86 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 			return fmt.Errorf("factory: create coding step run: %w", err)
 		}
 
-		prompt := job.Intent
+		var specContent string
 		if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
-			prompt = string(specBytes)
+			specContent = string(specBytes)
 		}
-		// If rejection notes exist, append them to the coding prompt (APR-6)
+
+		var rejectionNotes []string
 		rejections, _ := e.wtMgr.ListArtifacts(ctx, job.WorktreePath, job.ID)
 		for _, rej := range rejections {
 			if strings.HasPrefix(rej, "rejections/") {
 				if rData, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, rej); err == nil {
-					prompt = fmt.Sprintf("%s\n\n[Rejection Note from Gate]\n%s", prompt, string(rData))
+					rejectionNotes = append(rejectionNotes, string(rData))
 				}
 			}
 		}
-		if repairFeedback != "" {
-			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", prompt, repairFeedback)
+
+		var buildCmds, testCmds, lintCmds []string
+		var protectedPaths []string
+		if projCfg != nil {
+			buildCmds = projCfg.Commands.Build
+			testCmds = projCfg.Commands.Test
+			lintCmds = projCfg.Commands.Lint
+			protectedPaths = projCfg.Guardrails.ProtectedPaths
+		}
+
+		promptData := PromptData{
+			JobID:          job.ID,
+			WorkType:       job.WorkType,
+			Intent:         job.Intent,
+			ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
+			Spec:           specContent,
+			RejectionNotes: rejectionNotes,
+			RepairFeedback: repairFeedback,
+			BuildCmds:      buildCmds,
+			TestCmds:       testCmds,
+			LintCmds:       lintCmds,
+			ProtectedPaths: protectedPaths,
+		}
+		prompt, err := RenderPrompt(RoleCoding, promptData)
+		if err != nil {
+			return fmt.Errorf("factory: render coding prompt: %w", err)
+		}
+
+		// Resolve role, agent, and step timeout (HND-2, COD-10)
+		role, _ := RoleForStage(StageCoding)
+		stepTimeout := e.defaultAgentTimeout
+		if projCfg != nil && projCfg.AgentTimeout > 0 {
+			stepTimeout = projCfg.AgentTimeout
+		}
+		agentName := ""
+		if projCfg != nil {
+			agentName = projCfg.AgentForRole(role)
+		}
+		if agentName == "" && os.Getenv("GARAGEFAB_FAKE_AGENT") == "1" {
+			agentName = "fake"
+		}
+		if agentName == "" {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			now := time.Now().UTC()
+			step.EndedAt = &now
+			_ = e.store.UpdateStepRun(ctx, step)
+			errMsg := fmt.Sprintf("no agent configured for role %q (set agents.%s in .garagefab/project.yaml)", role, role)
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, StageCoding, StatusFailed, FailureBlocked, errMsg))
+				return nil
+			})
+			return fmt.Errorf("factory: %s", errMsg)
 		}
 
 		res, err := e.agentRunner.Run(ctx, AgentRequest{
 			JobID:        job.ID,
 			Stage:        StageCoding,
+			Role:         role,
+			Agent:        agentName,
 			WorktreePath: job.WorktreePath,
 			Prompt:       prompt,
 			ProjectName:  project.Name,
 			LogPath:      logPath,
+			Timeout:      stepTimeout,
 			OnProcessStart: func(pid, pgid int, startTime int64) {
 				_ = e.store.CreateProcessRecord(ctx, step.ID, pid, pgid, startTime)
 			},
@@ -530,11 +661,14 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 		failureInput.Attempt = currentAttempt
 		failureInput.MaxAttempts = maxAttempts
 
-		if err != nil || (res != nil && res.ExitCode != 0) {
+		if (res != nil && res.TimedOut) || err != nil || (res != nil && res.ExitCode != 0) {
 			agentFailed = true
 			code := 1
 			if res != nil {
 				code = res.ExitCode
+				if res.TimedOut {
+					failureInput.TimedOut = true
+				}
 			}
 			step.ExitCode = &code
 			failureInput.ExitCode = code
@@ -808,35 +942,39 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 	}
 
 	// 2. Prepare isolated prompt without prior coding agent conversation history (REV-1)
-	var promptBuilder strings.Builder
-	fmt.Fprintf(&promptBuilder, "# Review Task for Job %d (%s)\n\n", job.ID, job.Title)
-	fmt.Fprintf(&promptBuilder, "## Intent\n%s\n\n", job.Intent)
-
-	if job.WorkType == WorkTypeFeature {
-		if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
-			fmt.Fprintf(&promptBuilder, "## Specification\n%s\n\n", string(specBytes))
-		}
+	var specContent string
+	if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
+		specContent = string(specBytes)
 	}
 
 	diffOutput, _ := e.wtMgr.Diff(ctx, job.WorktreePath, job.BaseSHA)
-	fmt.Fprintf(&promptBuilder, "## Code Changes (Diff from Base)\n```diff\n%s\n```\n\n", diffOutput)
 
 	// Gather prior test/build command results
 	stepRuns, _ := e.store.ListStepRunsByJob(ctx, job.ID)
-	promptBuilder.WriteString("## Prior Verification Results\n")
+	var cmdSummary []string
 	for _, sr := range stepRuns {
 		if sr.Stage == StageCoding && sr.Kind == StepKindCommand {
 			exit := 0
 			if sr.ExitCode != nil {
 				exit = *sr.ExitCode
 			}
-			fmt.Fprintf(&promptBuilder, "- Attempt %d command (exit %d, status: %s): %s\n", sr.Attempt, exit, sr.Status, sr.LogPath)
+			cmdSummary = append(cmdSummary, fmt.Sprintf("Attempt %d command (exit %d, status: %s): %s", sr.Attempt, exit, sr.Status, sr.LogPath))
 		}
 	}
-	promptBuilder.WriteString("\n## Instructions\n" +
-		"Analyze the code changes against the intent/spec. Assess risks (side effects, performance, backward compatibility). " +
-		"Write your review to .garagefab/jobs/<id>/review.json conforming to Schema Version 1. " +
-		"DO NOT modify any code or other files.\n")
+
+	promptDataReview := PromptData{
+		JobID:          job.ID,
+		WorkType:       job.WorkType,
+		Intent:         job.Intent,
+		ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
+		Spec:           specContent,
+		Diff:           diffOutput,
+		CommandSummary: cmdSummary,
+	}
+	reviewPrompt, err := RenderPrompt(RoleReview, promptDataReview)
+	if err != nil {
+		return fmt.Errorf("factory: render review prompt: %w", err)
+	}
 
 	// 3. Initialize StepRun for Review (REV-6: single attempt, no repair loop)
 	logPathReview := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), "step_review.log")
@@ -855,13 +993,43 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 	}
 
 	// 4. Execute Review Agent
+	roleReview, _ := RoleForStage(StageIndependentReview)
+	stepTimeout := e.defaultAgentTimeout
+	if projCfg != nil && projCfg.AgentTimeout > 0 {
+		stepTimeout = projCfg.AgentTimeout
+	}
+	agentNameReview := ""
+	if projCfg != nil {
+		agentNameReview = projCfg.AgentForRole(roleReview)
+	}
+	if agentNameReview == "" && os.Getenv("GARAGEFAB_FAKE_AGENT") == "1" {
+		agentNameReview = "fake"
+	}
+	if agentNameReview == "" {
+		stepReview.Status = StepStatusFail
+		stepReview.FailureCategory = FailureBlocked
+		now := time.Now().UTC()
+		stepReview.EndedAt = &now
+		_ = e.store.UpdateStepRun(ctx, stepReview)
+		errMsg := fmt.Sprintf("no agent configured for role %q (set agents.%s in .garagefab/project.yaml)", roleReview, roleReview)
+		_ = e.store.InTx(ctx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, StageIndependentReview, StatusFailed, FailureBlocked, errMsg))
+			return nil
+		})
+		return fmt.Errorf("factory: %s", errMsg)
+	}
+
 	resReview, runErr := e.agentRunner.Run(ctx, AgentRequest{
 		JobID:        job.ID,
 		Stage:        StageIndependentReview,
+		Role:         roleReview,
+		Agent:        agentNameReview,
 		WorktreePath: job.WorktreePath,
-		Prompt:       promptBuilder.String(),
+		Prompt:       reviewPrompt,
 		ProjectName:  project.Name,
 		LogPath:      logPathReview,
+		Timeout:      stepTimeout,
 		OnProcessStart: func(pid, pgid int, startTime int64) {
 			_ = e.store.CreateProcessRecord(ctx, stepReview.ID, pid, pgid, startTime)
 		},
@@ -869,6 +1037,21 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 
 	nowReview := time.Now().UTC()
 	stepReview.EndedAt = &nowReview
+
+	// Review agent process timeout (COD-10)
+	if resReview != nil && resReview.TimedOut {
+		stepReview.Status = StepStatusFail
+		stepReview.FailureCategory = FailureBlocked
+		code := 1
+		stepReview.ExitCode = &code
+		_ = e.store.UpdateStepRun(ctx, stepReview)
+		_ = e.store.InTx(ctx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageIndependentReview, StatusFailed, FailureBlocked))
+			return nil
+		})
+		return fmt.Errorf("factory: review agent timed out: %s", FailureBlocked)
+	}
 
 	// Review agent crash or execution error (REV-6)
 	if runErr != nil || (resReview != nil && resReview.ExitCode != 0) {

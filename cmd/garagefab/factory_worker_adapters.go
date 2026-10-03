@@ -147,10 +147,13 @@ func (a *factoryAgentAdapter) Run(ctx context.Context, req factory.AgentRequest)
 	workerReq := agent.AgentRequest{
 		JobID:          req.JobID,
 		Stage:          req.Stage,
+		Role:           req.Role,
+		Agent:          req.Agent,
 		WorktreePath:   req.WorktreePath,
 		Prompt:         req.Prompt,
 		ProjectName:    req.ProjectName,
 		LogPath:        req.LogPath,
+		Timeout:        req.Timeout,
 		OnProcessStart: req.OnProcessStart,
 	}
 	res, err := a.runner.Run(ctx, workerReq)
@@ -162,6 +165,7 @@ func (a *factoryAgentAdapter) Run(ctx context.Context, req factory.AgentRequest)
 		ExitCode:     res.ExitCode,
 		ArtifactPath: res.ArtifactPath,
 		Summary:      res.Summary,
+		TimedOut:     res.TimedOut,
 	}, nil
 }
 
@@ -245,8 +249,24 @@ func (a *factoryProjectConfigAdapter) GetProjectConfig(ctx context.Context, repo
 	if err != nil {
 		return nil, err
 	}
+	agentsMap := make(map[string]string)
+	if yamlCfg.Agents.Spec != "" {
+		agentsMap[factory.RoleSpec] = yamlCfg.Agents.Spec
+	}
+	if yamlCfg.Agents.Probe != "" {
+		agentsMap[factory.RoleProbe] = yamlCfg.Agents.Probe
+	}
+	if yamlCfg.Agents.Coding != "" {
+		agentsMap[factory.RoleCoding] = yamlCfg.Agents.Coding
+	}
+	if yamlCfg.Agents.Review != "" {
+		agentsMap[factory.RoleReview] = yamlCfg.Agents.Review
+	}
+
 	return &factory.ProjectConfig{
-		BaseRef: yamlCfg.BaseRef,
+		BaseRef:      yamlCfg.BaseRef,
+		Agents:       agentsMap,
+		AgentTimeout: yamlCfg.Timeouts.Agent,
 		Commands: factory.ProjectCommands{
 			Build: yamlCfg.Commands.Build,
 			Test:  yamlCfg.Commands.Test,

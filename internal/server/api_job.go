@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/garagefab/garagefab/internal/config"
 	"github.com/garagefab/garagefab/internal/factory"
 	"github.com/garagefab/garagefab/internal/store"
 )
@@ -146,6 +147,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(job)
 }
 
+type jobResponse struct {
+	*store.Job
+	HandoffCommand string `json:"handoff_command"`
+}
+
 // handleGetJob handles GET /api/jobs/{id}.
 func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
@@ -165,8 +171,26 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var handoffCmd string
+	if factory.HandoffEligible(job.Status) {
+		project, pErr := s.DB.Projects().GetProject(r.Context(), job.ProjectID)
+		if pErr == nil && project != nil {
+			if projCfg, cfgErr := config.LoadProjectConfig(project.RepoPath); cfgErr == nil && projCfg != nil {
+				if role, ok := factory.RoleForStage(job.Stage); ok {
+					agent := projCfg.AgentForRole(role)
+					if agent != "" {
+						handoffCmd = factory.HandoffCommand(project.RepoPath, agent, job.ID)
+					}
+				}
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(job)
+	_ = json.NewEncoder(w).Encode(jobResponse{
+		Job:            job,
+		HandoffCommand: handoffCmd,
+	})
 }
 
 // handleGetJobSteps handles GET /api/jobs/{id}/steps.

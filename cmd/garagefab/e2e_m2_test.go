@@ -127,6 +127,9 @@ func TestScenario3_RepairLoopAndGuardrail_COD4_5_6_GRD1_4(t *testing.T) {
 	_ = os.MkdirAll(gfDir, 0755)
 	projYaml := `
 base_ref: main
+agents:
+  coding: opencode
+  review: agy
 commands:
   test: ["test -f fixed.txt"]
 guardrails:
