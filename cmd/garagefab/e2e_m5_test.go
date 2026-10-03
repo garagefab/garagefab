@@ -424,7 +424,7 @@ func TestE2E_M5_MultiAgentPipeline_HND1_HND6(t *testing.T) {
 	_ = json.NewDecoder(jobResp.Body).Decode(&jobDTO)
 	jobResp.Body.Close()
 
-	expectedHandoff := fmt.Sprintf("cd %s ; agy -i \"Activate caveman mode. garagefab-work %d\"", repoDir, jobID)
+	expectedHandoff := fmt.Sprintf("cd %s ; agy -i \"/caveman garagefab-work %d\"", repoDir, jobID)
 	if jobDTO.HandoffCommand != expectedHandoff {
 		t.Errorf("handoff_command = %q, want %q", jobDTO.HandoffCommand, expectedHandoff)
 	}
