@@ -1,0 +1,2 @@
+{"type":"step_start","timestamp":1790875679788,"sessionID":"ses_f077dcbf4ffegpkZn64ZW74rq6","part":{"id":"prt_0f8823c27001THDAq1XNv00Wm7","messageID":"msg_0f88234df001rFU3eu8PCy43ge","sessionID":"ses_f077dcbf4ffegpkZn64ZW74rq6","type":"step-start"}}
+{"type":"error","timestamp":1790875682178,"message":"Rate limit exceeded for provider","error":{"message":"Rate limit exceeded for provider"}}
