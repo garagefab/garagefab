@@ -6,12 +6,19 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/garagefab/garagefab/internal/config"
+	"github.com/garagefab/garagefab/internal/store"
+	"github.com/garagefab/garagefab/internal/worker/agent"
 )
 
 // gitVersionRegex extracts the major, minor, and patch numbers from "git version X.Y.Z" output.
@@ -78,4 +85,114 @@ func checkPortAvailable(addr string) error {
 	// Immediately close the temporary listener so Garagefab can bind it during server startup.
 	_ = ln.Close()
 	return nil
+}
+
+// semverRegex extracts semver major.minor.patch from agent version strings.
+var semverRegex = regexp.MustCompile(`(\d+\.\d+\.\d+)`)
+
+// AgentCheckResult holds the preflight evaluation of a single AI agent tool (R3).
+type AgentCheckResult struct {
+	Agent           string
+	TestedVersion   string
+	Installed       bool
+	FoundVersion    string
+	VersionMismatch bool
+	Warning         string
+}
+
+// CheckAgent verifies that a configured agent CLI exists on the system PATH and reports
+// any version drift against known tested baselines (R3).
+func CheckAgent(agentName string, lookPath func(string) (string, error), runVersion func(string) (string, error)) AgentCheckResult {
+	result := AgentCheckResult{
+		Agent: agentName,
+	}
+
+	switch agentName {
+	case "agy":
+		result.TestedVersion = agent.TestedAgyVersion
+	case "opencode":
+		result.TestedVersion = agent.TestedOpenCodeVersion
+	default:
+		// Custom or untracked agent
+	}
+
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	if runVersion == nil {
+		runVersion = func(bin string) (string, error) {
+			out, err := exec.Command(bin, "--version").Output()
+			if err != nil {
+				return "", err
+			}
+			return string(out), nil
+		}
+	}
+
+	binPath, err := lookPath(agentName)
+	if err != nil {
+		result.Installed = false
+		result.Warning = fmt.Sprintf("warning: agent %q not found on PATH. Jobs requiring it will fail Blocked.", agentName)
+		return result
+	}
+
+	result.Installed = true
+	verOutput, err := runVersion(binPath)
+	if err != nil {
+		result.Warning = fmt.Sprintf("warning: agent %q version check failed: %v", agentName, err)
+		return result
+	}
+
+	match := semverRegex.FindString(verOutput)
+	if match != "" {
+		result.FoundVersion = match
+	} else {
+		result.FoundVersion = strings.TrimSpace(verOutput)
+	}
+
+	if result.TestedVersion != "" && result.FoundVersion != result.TestedVersion {
+		result.VersionMismatch = true
+		result.Warning = fmt.Sprintf("warning: agent %q version %s differs from tested version %s (R3)", agentName, result.FoundVersion, result.TestedVersion)
+	}
+
+	return result
+}
+
+// CheckRegisteredProjectAgents gathers all distinct AI agents referenced by active projects
+// and executes preflight validations for each, emitting warnings to the provided writer and logger.
+func CheckRegisteredProjectAgents(ctx context.Context, db *store.DB, out io.Writer) []AgentCheckResult {
+	if db == nil {
+		return nil
+	}
+	projects, err := db.Projects().ListProjects(ctx)
+	if err != nil {
+		slog.Warn("preflight: could not list projects for agent check", "error", err)
+		return nil
+	}
+
+	distinct := make(map[string]bool)
+	for _, p := range projects {
+		cfg, err := config.LoadProjectConfig(p.RepoPath)
+		if err != nil {
+			continue
+		}
+		for _, a := range []string{cfg.Agents.Spec, cfg.Agents.Probe, cfg.Agents.Coding, cfg.Agents.Review} {
+			if a != "" && a != "fake" {
+				distinct[a] = true
+			}
+		}
+	}
+
+	var results []AgentCheckResult
+	for agentName := range distinct {
+		res := CheckAgent(agentName, nil, nil)
+		results = append(results, res)
+		if res.Warning != "" {
+			if out != nil {
+				fmt.Fprintln(out, res.Warning)
+			}
+			slog.Warn(res.Warning, "agent", agentName, "installed", res.Installed, "version", res.FoundVersion)
+		}
+	}
+	return results
 }

@@ -37,6 +37,9 @@ import (
 	"github.com/garagefab/garagefab/internal/worker/command"
 )
 
+// TestedOpenCodeVersion is the verified and supported version of the opencode CLI (Spike A, R3).
+const TestedOpenCodeVersion = "1.18.34"
+
 // OpenCodeRunner executes AI agent tasks via the OpenCode CLI tool (D21).
 type OpenCodeRunner struct {
 	Binary         string   // Path or name of the opencode binary (defaults to "opencode")

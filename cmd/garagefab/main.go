@@ -36,9 +36,10 @@ import (
 // Command-line flag variables.
 // In Go, flags are bound to package-level variables during package initialization (init()).
 var (
-	dataDirFlag string // Custom data directory path (defaults to ~/.garagefab)
-	portFlag    int    // Custom port override (defaults to 7878 or config.yaml)
-	noOpenFlag  bool   // If true, prevents automatic browser launch on startup
+	dataDirFlag   string // Custom data directory path (defaults to ~/.garagefab)
+	portFlag      int    // Custom port override (defaults to 7878 or config.yaml)
+	noOpenFlag    bool   // If true, prevents automatic browser launch on startup
+	fakeAgentFlag bool   // If true, routes all agent roles to in-process fake runner
 )
 
 // main is the application entry point (equivalent to public static void main in Java).
@@ -136,20 +137,39 @@ var startCmd = &cobra.Command{
 			slog.Warn("startup crash recovery warning", "error", err)
 		}
 
+		// 4c. Pre-flight Agent Checks (R3).
+		// Validate that all distinct agent binaries referenced by registered projects
+		// are on PATH and match tested version baselines.
+		CheckRegisteredProjectAgents(context.Background(), db, os.Stdout)
+
 		// 5. Dependency Injection / Wiring (Hexagonal Architecture).
 		// 'factory' defines interfaces (ports) and cannot import 'store' or 'worker' directly.
 		// These adapters bridge the concrete implementations to the factory's interfaces.
 		storeAdapter := newFactoryStoreAdapter(db)
 		wtMgr := newFactoryWorktreeAdapter(worktree.NewManager(filepath.Join(cfg.DataDir, "worktrees")))
-		fakeAgent := newFactoryAgentAdapter(agent.NewFakeRunner())
+
+		// Build Agent Router and register supported CLI adapters (HND-2, COD-10).
+		agentRouter := agent.NewRouter()
+		if fakeAgentFlag || os.Getenv("GARAGEFAB_FAKE_AGENT") == "1" {
+			fakeRunner := agent.NewFakeRunner()
+			agentRouter.Register("fake", fakeRunner)
+			agentRouter.Register("agy", fakeRunner)
+			agentRouter.Register("opencode", fakeRunner)
+		} else {
+			agentRouter.Register("agy", agent.NewAgyRunner("", cfg.Engine.EnvPassthrough))
+			agentRouter.Register("opencode", agent.NewOpenCodeRunner("", cfg.Engine.EnvPassthrough))
+		}
+		agentAdapter := newFactoryAgentAdapter(agentRouter)
+
 		cmdRunner := newFactoryCommandAdapter(command.NewRunner())
 		guardrailAdapter := newFactoryGuardrailAdapter()
 		projCfgAdapter := newFactoryProjectConfigAdapter()
 
-		engine := factory.NewEngine(storeAdapter, wtMgr, fakeAgent, cmdRunner, filepath.Join(cfg.DataDir, "logs"))
+		engine := factory.NewEngine(storeAdapter, wtMgr, agentAdapter, cmdRunner, filepath.Join(cfg.DataDir, "logs"))
 		engine.SetGuardrailRunner(guardrailAdapter)
 		engine.SetProjectConfigProvider(projCfgAdapter)
 		engine.SetMaxRepairAttempts(cfg.Engine.MaxRepairAttempts)
+		engine.SetDefaultAgentTimeout(cfg.Engine.StepTimeouts.Agent)
 
 		scheduler := factory.NewScheduler(storeAdapter, engine, cfg.Engine.MaxConcurrentJobs)
 		scheduler.SetProjectConfigProvider(projCfgAdapter)
@@ -226,6 +246,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&dataDirFlag, "data-dir", "", "path to data directory (defaults to ~/.garagefab)")
 	startCmd.Flags().IntVar(&portFlag, "port", 0, "port to listen on (defaults to 7878 or value in config.yaml)")
 	startCmd.Flags().BoolVar(&noOpenFlag, "no-open", false, "do not open the browser on start")
+	startCmd.Flags().BoolVar(&fakeAgentFlag, "fake-agent", false, "force all agent roles to use fake agent")
+	_ = startCmd.Flags().MarkHidden("fake-agent")
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(startCmd)

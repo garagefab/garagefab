@@ -24,6 +24,8 @@
 package main
 
 import (
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -51,5 +53,96 @@ func TestParseGitVersion(t *testing.T) {
 		if (err == nil) != tt.valid {
 			t.Errorf("validateGitVersionOutput(%q): expected valid=%v, got err=%v", tt.output, tt.valid, err)
 		}
+	}
+}
+
+// TestCheckAgent_Preflight_R3 tests requirement R3:
+// Exact version match produces no warning; mismatch produces a warning only (never a hard error);
+// missing binary produces a clear missing warning.
+func TestCheckAgent_Preflight_R3(t *testing.T) {
+	tests := []struct {
+		name                 string
+		agentName            string
+		lookPathErr          error
+		versionOutput        string
+		versionErr           error
+		wantInstalled        bool
+		wantVersionMismatch  bool
+		wantWarningSubstring string
+	}{
+		{
+			name:                 "agy exact tested version match",
+			agentName:            "agy",
+			lookPathErr:          nil,
+			versionOutput:        "1.2.14\n",
+			wantInstalled:        true,
+			wantVersionMismatch:  false,
+			wantWarningSubstring: "",
+		},
+		{
+			name:                 "opencode exact tested version match",
+			agentName:            "opencode",
+			lookPathErr:          nil,
+			versionOutput:        "opencode 1.18.34 (arm64)\n",
+			wantInstalled:        true,
+			wantVersionMismatch:  false,
+			wantWarningSubstring: "",
+		},
+		{
+			name:                 "agy version mismatch warning only (R3)",
+			agentName:            "agy",
+			lookPathErr:          nil,
+			versionOutput:        "1.3.0\n",
+			wantInstalled:        true,
+			wantVersionMismatch:  true,
+			wantWarningSubstring: "differs from tested version 1.2.14 (R3)",
+		},
+		{
+			name:                 "opencode version mismatch warning only (R3)",
+			agentName:            "opencode",
+			lookPathErr:          nil,
+			versionOutput:        "2.0.0\n",
+			wantInstalled:        true,
+			wantVersionMismatch:  true,
+			wantWarningSubstring: "differs from tested version 1.18.34 (R3)",
+		},
+		{
+			name:                 "missing binary on PATH",
+			agentName:            "agy",
+			lookPathErr:          errors.New("executable file not found in $PATH"),
+			wantInstalled:        false,
+			wantVersionMismatch:  false,
+			wantWarningSubstring: "not found on PATH. Jobs requiring it will fail Blocked.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := CheckAgent(
+				tt.agentName,
+				func(bin string) (string, error) {
+					return "/mock/bin/" + bin, tt.lookPathErr
+				},
+				func(bin string) (string, error) {
+					return tt.versionOutput, tt.versionErr
+				},
+			)
+
+			if res.Installed != tt.wantInstalled {
+				t.Errorf("Installed = %v, want %v", res.Installed, tt.wantInstalled)
+			}
+			if res.VersionMismatch != tt.wantVersionMismatch {
+				t.Errorf("VersionMismatch = %v, want %v", res.VersionMismatch, tt.wantVersionMismatch)
+			}
+			if tt.wantWarningSubstring == "" {
+				if res.Warning != "" {
+					t.Errorf("expected no warning, got: %q", res.Warning)
+				}
+			} else {
+				if !strings.Contains(res.Warning, tt.wantWarningSubstring) {
+					t.Errorf("warning %q does not contain %q", res.Warning, tt.wantWarningSubstring)
+				}
+			}
+		})
 	}
 }
