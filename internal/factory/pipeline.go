@@ -308,13 +308,23 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 			return fmt.Errorf("factory: create spec step run: %w", err)
 		}
 
-		// Prompt construction (SPC-1): Intent + any clarification.md
-		prompt := fmt.Sprintf("# Intent\n%s", job.Intent)
+		// Prompt construction (SPC-1, SPC-2): Render standardized spec prompt
+		var clarificationContent string
 		if clarData, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "clarification.md"); err == nil && len(clarData) > 0 {
-			prompt = fmt.Sprintf("%s\n\n# Clarification History\n%s", prompt, string(clarData))
+			clarificationContent = string(clarData)
 		}
-		if repairFeedback != "" {
-			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", prompt, repairFeedback)
+
+		promptData := PromptData{
+			JobID:          job.ID,
+			WorkType:       job.WorkType,
+			Intent:         job.Intent,
+			ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
+			Clarification:  clarificationContent,
+			RepairFeedback: repairFeedback,
+		}
+		prompt, err := RenderPrompt(RoleSpec, promptData)
+		if err != nil {
+			return fmt.Errorf("factory: render spec prompt: %w", err)
 		}
 
 		// Resolve role, agent, and step timeout (HND-2, COD-10)
@@ -554,21 +564,46 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 			return fmt.Errorf("factory: create coding step run: %w", err)
 		}
 
-		prompt := job.Intent
+		var specContent string
 		if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
-			prompt = string(specBytes)
+			specContent = string(specBytes)
 		}
-		// If rejection notes exist, append them to the coding prompt (APR-6)
+
+		var rejectionNotes []string
 		rejections, _ := e.wtMgr.ListArtifacts(ctx, job.WorktreePath, job.ID)
 		for _, rej := range rejections {
 			if strings.HasPrefix(rej, "rejections/") {
 				if rData, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, rej); err == nil {
-					prompt = fmt.Sprintf("%s\n\n[Rejection Note from Gate]\n%s", prompt, string(rData))
+					rejectionNotes = append(rejectionNotes, string(rData))
 				}
 			}
 		}
-		if repairFeedback != "" {
-			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", prompt, repairFeedback)
+
+		var buildCmds, testCmds, lintCmds []string
+		var protectedPaths []string
+		if projCfg != nil {
+			buildCmds = projCfg.Commands.Build
+			testCmds = projCfg.Commands.Test
+			lintCmds = projCfg.Commands.Lint
+			protectedPaths = projCfg.Guardrails.ProtectedPaths
+		}
+
+		promptData := PromptData{
+			JobID:          job.ID,
+			WorkType:       job.WorkType,
+			Intent:         job.Intent,
+			ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
+			Spec:           specContent,
+			RejectionNotes: rejectionNotes,
+			RepairFeedback: repairFeedback,
+			BuildCmds:      buildCmds,
+			TestCmds:       testCmds,
+			LintCmds:       lintCmds,
+			ProtectedPaths: protectedPaths,
+		}
+		prompt, err := RenderPrompt(RoleCoding, promptData)
+		if err != nil {
+			return fmt.Errorf("factory: render coding prompt: %w", err)
 		}
 
 		// Resolve role, agent, and step timeout (HND-2, COD-10)
@@ -907,35 +942,39 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 	}
 
 	// 2. Prepare isolated prompt without prior coding agent conversation history (REV-1)
-	var promptBuilder strings.Builder
-	fmt.Fprintf(&promptBuilder, "# Review Task for Job %d (%s)\n\n", job.ID, job.Title)
-	fmt.Fprintf(&promptBuilder, "## Intent\n%s\n\n", job.Intent)
-
-	if job.WorkType == WorkTypeFeature {
-		if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
-			fmt.Fprintf(&promptBuilder, "## Specification\n%s\n\n", string(specBytes))
-		}
+	var specContent string
+	if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
+		specContent = string(specBytes)
 	}
 
 	diffOutput, _ := e.wtMgr.Diff(ctx, job.WorktreePath, job.BaseSHA)
-	fmt.Fprintf(&promptBuilder, "## Code Changes (Diff from Base)\n```diff\n%s\n```\n\n", diffOutput)
 
 	// Gather prior test/build command results
 	stepRuns, _ := e.store.ListStepRunsByJob(ctx, job.ID)
-	promptBuilder.WriteString("## Prior Verification Results\n")
+	var cmdSummary []string
 	for _, sr := range stepRuns {
 		if sr.Stage == StageCoding && sr.Kind == StepKindCommand {
 			exit := 0
 			if sr.ExitCode != nil {
 				exit = *sr.ExitCode
 			}
-			fmt.Fprintf(&promptBuilder, "- Attempt %d command (exit %d, status: %s): %s\n", sr.Attempt, exit, sr.Status, sr.LogPath)
+			cmdSummary = append(cmdSummary, fmt.Sprintf("Attempt %d command (exit %d, status: %s): %s", sr.Attempt, exit, sr.Status, sr.LogPath))
 		}
 	}
-	promptBuilder.WriteString("\n## Instructions\n" +
-		"Analyze the code changes against the intent/spec. Assess risks (side effects, performance, backward compatibility). " +
-		"Write your review to .garagefab/jobs/<id>/review.json conforming to Schema Version 1. " +
-		"DO NOT modify any code or other files.\n")
+
+	promptDataReview := PromptData{
+		JobID:          job.ID,
+		WorkType:       job.WorkType,
+		Intent:         job.Intent,
+		ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
+		Spec:           specContent,
+		Diff:           diffOutput,
+		CommandSummary: cmdSummary,
+	}
+	reviewPrompt, err := RenderPrompt(RoleReview, promptDataReview)
+	if err != nil {
+		return fmt.Errorf("factory: render review prompt: %w", err)
+	}
 
 	// 3. Initialize StepRun for Review (REV-6: single attempt, no repair loop)
 	logPathReview := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), "step_review.log")
@@ -987,7 +1026,7 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 		Role:         roleReview,
 		Agent:        agentNameReview,
 		WorktreePath: job.WorktreePath,
-		Prompt:       promptBuilder.String(),
+		Prompt:       reviewPrompt,
 		ProjectName:  project.Name,
 		LogPath:      logPathReview,
 		Timeout:      stepTimeout,
