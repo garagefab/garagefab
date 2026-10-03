@@ -175,3 +175,31 @@
 - **`PROJECT_DOCS/04_plan.md` (P-2 & P-8)**:
   - P-2: `agy` reads both `AGENTS.md` and `GEMINI.md`. `AGENTS.md` is the primary repository standard.
   - P-8: Skill locations (`~/.gemini/antigravity/...`) verified.
+
+---
+
+## 5. Addendum: Skill Locations and Handoff Resolution (F10)
+
+> Date: 2026-10-03  
+> Target: Milestone M5 Task T7 Verification Step
+
+### 5.1 Skill Directory Discovery
+
+1. **`agy` (v1.2.14)**:
+   - Built-in skills are mounted from `~/.gemini/antigravity-cli/builtin/skills/` (or `~/.gemini/antigravity/builtin/skills/`).
+   - Global user/custom skills are automatically discovered and indexed from `~/.gemini/config/skills/<skill_name>/SKILL.md`.
+   - Empirically confirmed: `~/.gemini/antigravity/skills/` is not in the automatic search path of `agy 1.2.14`. To ensure complete forward and backward compatibility across versions, `garagefab install-skills` installs the skill tree to `~/.gemini/antigravity/skills/garagefab-work/` AND `~/.gemini/config/skills/garagefab-work/`.
+
+2. **`opencode` (v1.18.34)**:
+   - Global skills are discovered from `~/.config/opencode/skills/<skill_name>/SKILL.md`.
+   - Custom skill directories can also be registered via `skills.paths` array in `~/.config/opencode/opencode.jsonc`.
+   - `garagefab install-skills` installs directly to `~/.config/opencode/skills/garagefab-work/`.
+
+### 5.2 Handoff Command Resolution
+
+- **Interactive prompt handoff**:
+  When a developer copies and runs `cd <project> ; <agent> garagefab-work <job-id>`:
+  - In `agy`: the interactive agent resolves `garagefab-work <job-id>` via its natural language skill description and loads the runbook procedure.
+  - In `opencode`: the skill in `~/.config/opencode/skills/garagefab-work` is registered as an interactive capability.
+- **Defense in depth**: The installed helper `scripts/gf-api.sh` strictly restricts methods and paths (`GET /api/jobs/*` and `POST /api/jobs/<id>/clarification` only; all other operations exit 2), ensuring that neither agent can execute state transitions reserved for the human dashboard gate (`APR-7`, `HND-5`).
+

@@ -112,4 +112,5 @@ make build
 ./bin/garagefab start              # Start with defaults (~/.garagefab, port 7878)
 ./bin/garagefab start --no-open    # Start without opening the browser
 ./bin/garagefab version            # Print version info
+./bin/garagefab install-skills     # Install garagefab-work skill for agy & opencode
 ```
