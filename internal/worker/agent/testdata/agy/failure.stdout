@@ -1,0 +1,5 @@
+**ERROR: Task failure requested.**
+
+The task cannot be completed and has failed immediately as requested. 
+
+*(Note: As an agent executing within an `agy` conversation turn, the host process exit code is managed by the `agy` CLI runtime upon turn completion.)*

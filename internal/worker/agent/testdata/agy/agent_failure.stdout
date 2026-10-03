@@ -1,0 +1,1 @@
+{"conversation_id":"fd3a3d31-b87b-4871-ac81-53592e6ea4bd","status":"FAILED","response":"Task execution failed: unable to satisfy requirements.","duration_seconds":12.34,"num_turns":1,"usage":{"input_tokens":1000,"output_tokens":200,"thinking_tokens":100,"total_tokens":1200}}
