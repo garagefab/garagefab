@@ -125,6 +125,47 @@ func TestSanitizeEnv_SEC6(t *testing.T) {
 	}
 }
 
+// TestSanitizeEnv_Passthrough_SEC6 verifies requirement SEC-6:
+// - Explicit passthrough allows variables matching the secret blacklist (e.g. GEMINI_API_KEY).
+// - LC_* locale variables pass through.
+// - GARAGEFAB_* is hard-denied even if listed in passthrough.
+func TestSanitizeEnv_Passthrough_SEC6(t *testing.T) {
+	os.Setenv("GARAGEFAB_GITHUB_TOKEN", "gf-gh-secret")
+	os.Setenv("GARAGEFAB_API_TOKEN", "gf-api-secret")
+	os.Setenv("GEMINI_API_KEY", "ai-secret-key-123")
+	os.Setenv("LC_CTYPE", "en_US.UTF-8")
+	defer func() {
+		os.Unsetenv("GARAGEFAB_GITHUB_TOKEN")
+		os.Unsetenv("GARAGEFAB_API_TOKEN")
+		os.Unsetenv("GEMINI_API_KEY")
+		os.Unsetenv("LC_CTYPE")
+	}()
+
+	passthrough := []string{"GEMINI_API_KEY", "GARAGEFAB_API_TOKEN"}
+	sanitized := command.SanitizeEnvWithPassthrough(passthrough, nil)
+
+	hasGemini := false
+	hasLC := false
+	for _, entry := range sanitized {
+		if strings.HasPrefix(entry, "GARAGEFAB_") {
+			t.Errorf("SEC-6 hard deny violated: found %s in sanitized env", entry)
+		}
+		if entry == "GEMINI_API_KEY=ai-secret-key-123" {
+			hasGemini = true
+		}
+		if entry == "LC_CTYPE=en_US.UTF-8" {
+			hasLC = true
+		}
+	}
+
+	if !hasGemini {
+		t.Errorf("expected GEMINI_API_KEY to be passed through via passthrough list")
+	}
+	if !hasLC {
+		t.Errorf("expected LC_CTYPE to pass through via standard allow-list")
+	}
+}
+
 // TestCommandRunner_LargeOutputLine_LOG2 tests that lines larger than bufio.Scanner's default 64KB
 // are properly captured without token too long errors.
 func TestCommandRunner_LargeOutputLine_LOG2(t *testing.T) {

@@ -56,6 +56,7 @@ type RunOptions struct {
 	WorkDir        string            // Working directory for command execution (the job worktree)
 	Command        string            // Shell command string to execute (passed to `sh -c`)
 	Env            map[string]string // Additional environment variables (will be sanitized)
+	PassthroughEnv []string          // Explicit variable names allowed to bypass secret blacklist (SEC-6)
 	LogPath        string            // Optional log file path for real-time output logging
 	OnProcessStart ProcessStartFunc  // Callback invoked immediately after OS process fork
 }
@@ -77,9 +78,16 @@ func NewRunner() *Runner {
 	return &Runner{}
 }
 
-// SanitizeEnv returns a minimal, sanitized environment for subprocesses (SEC-6).
-// It strips sensitive environment variables containing tokens, passwords, or secrets.
-func SanitizeEnv(customEnv map[string]string) []string {
+// SanitizeEnvWithPassthrough returns a minimal, sanitized environment for subprocesses (SEC-6),
+// allowing specific named variables (e.g. AI provider API keys) to bypass the secret blacklist.
+//
+// Security Invariants:
+//  1. Hard Deny: Any variable matching GARAGEFAB_* is ALWAYS stripped under all circumstances,
+//     even if explicitly listed in passthrough. Agents must NEVER read factory internal tokens.
+//  2. Allow-list: PATH, HOME, USER, LOGNAME, TMPDIR, SHELL, LANG, TERM, and LC_* are preserved.
+//  3. Blacklist: Any unlisted variable containing TOKEN, SECRET, KEY, PASSWORD, GITHUB, or AUTH
+//     is stripped unless explicitly permitted via the passthrough slice.
+func SanitizeEnvWithPassthrough(passthrough []string, customEnv map[string]string) []string {
 	// Whitelist of benign OS environment variables allowed through to subprocesses
 	allowedKeys := map[string]bool{
 		"PATH":    true,
@@ -89,8 +97,27 @@ func SanitizeEnv(customEnv map[string]string) []string {
 		"TMPDIR":  true,
 		"SHELL":   true,
 		"LANG":    true,
-		"LC_ALL":  true,
 		"TERM":    true,
+	}
+
+	passMap := make(map[string]bool, len(passthrough))
+	for _, p := range passthrough {
+		passMap[p] = true
+	}
+
+	isHardDenied := func(key string) bool {
+		upper := strings.ToUpper(key)
+		return strings.HasPrefix(upper, "GARAGEFAB") || strings.Contains(upper, "GARAGEFAB")
+	}
+
+	isSecret := func(key string) bool {
+		upper := strings.ToUpper(key)
+		return strings.Contains(upper, "TOKEN") ||
+			strings.Contains(upper, "SECRET") ||
+			strings.Contains(upper, "KEY") ||
+			strings.Contains(upper, "PASSWORD") ||
+			strings.Contains(upper, "GITHUB") ||
+			strings.Contains(upper, "AUTH")
 	}
 
 	var env []string
@@ -100,31 +127,36 @@ func SanitizeEnv(customEnv map[string]string) []string {
 			continue
 		}
 		key := parts[0]
-		upperKey := strings.ToUpper(key)
 
-		// Never leak secrets or tokens to untrusted subprocesses
-		if strings.Contains(upperKey, "TOKEN") ||
-			strings.Contains(upperKey, "SECRET") ||
-			strings.Contains(upperKey, "KEY") ||
-			strings.Contains(upperKey, "PASSWORD") ||
-			strings.Contains(upperKey, "GARAGEFAB") ||
-			strings.Contains(upperKey, "GITHUB") ||
-			strings.Contains(upperKey, "AUTH") {
+		// Hard deny: internal factory secrets are never exposed under any circumstances (SEC-6)
+		if isHardDenied(key) {
 			continue
 		}
 
-		if allowedKeys[key] {
+		if passMap[key] {
+			env = append(env, entry)
+			continue
+		}
+
+		if isSecret(key) {
+			continue
+		}
+
+		if allowedKeys[key] || strings.HasPrefix(key, "LC_") {
 			env = append(env, entry)
 		}
 	}
 
-	// Append custom environment variables if they don't violate secret blacklists
+	// Append custom environment variables if they don't violate secret blacklists or are passed through
 	for k, v := range customEnv {
-		upperKey := strings.ToUpper(k)
-		if strings.Contains(upperKey, "TOKEN") ||
-			strings.Contains(upperKey, "SECRET") ||
-			strings.Contains(upperKey, "KEY") ||
-			strings.Contains(upperKey, "PASSWORD") {
+		if isHardDenied(k) {
+			continue
+		}
+		if passMap[k] {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+			continue
+		}
+		if isSecret(k) {
 			continue
 		}
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
@@ -133,12 +165,18 @@ func SanitizeEnv(customEnv map[string]string) []string {
 	return env
 }
 
+// SanitizeEnv returns a minimal, sanitized environment for subprocesses (SEC-6).
+// It strips sensitive environment variables containing tokens, passwords, or secrets.
+func SanitizeEnv(customEnv map[string]string) []string {
+	return SanitizeEnvWithPassthrough(nil, customEnv)
+}
+
 // Run executes a shell command via `sh -c` inside opts.WorkDir with full output capture.
 func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	// Construct command wrapped in POSIX shell
 	cmd := exec.CommandContext(ctx, "sh", "-c", opts.Command)
 	cmd.Dir = opts.WorkDir
-	cmd.Env = SanitizeEnv(opts.Env)
+	cmd.Env = SanitizeEnvWithPassthrough(opts.PassthroughEnv, opts.Env)
 
 	// Create new process group: child becomes leader of its own PGID (SEC-6, RCV-1)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
