@@ -151,7 +151,7 @@ agents:
 	if !ok || cmd1 == "" {
 		t.Fatalf("expected non-empty handoff_command for job1, got: %v", res1["handoff_command"])
 	}
-	expectedCmd1 := fmt.Sprintf("cd '%s' ; agy garagefab-work %d", projectDir, job1.ID)
+	expectedCmd1 := fmt.Sprintf("cd '%s' ; agy -i \"Activate caveman mode. garagefab-work %d\"", projectDir, job1.ID)
 	if cmd1 != expectedCmd1 {
 		t.Errorf("job1 handoff_command mismatch.\nExpected: %s\nGot:      %s", expectedCmd1, cmd1)
 	}
@@ -162,7 +162,7 @@ agents:
 	if !ok || cmd2 == "" {
 		t.Fatalf("expected non-empty handoff_command for job2, got: %v", res2["handoff_command"])
 	}
-	expectedCmd2 := fmt.Sprintf("cd '%s' ; opencode garagefab-work %d", projectDir, job2.ID)
+	expectedCmd2 := fmt.Sprintf("cd '%s' ; opencode --prompt \"Activate caveman mode. garagefab-work %d\"", projectDir, job2.ID)
 	if cmd2 != expectedCmd2 {
 		t.Errorf("job2 handoff_command mismatch.\nExpected: %s\nGot:      %s", expectedCmd2, cmd2)
 	}

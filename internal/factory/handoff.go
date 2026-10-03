@@ -79,10 +79,17 @@ func quotePath(path string) string {
 }
 
 // HandoffCommand formats the exact CLI invocation string to resume a paused job (HND-1, HND-2).
-// Example: `cd '/Users/me/my app' ; agy garagefab-work 178`
+// Example for agy: `cd '/Users/me/my app' ; agy -i "Activate caveman mode. garagefab-work 178"`
+// Example for opencode: `cd '/Users/me/my app' ; opencode --prompt "Activate caveman mode. garagefab-work 178"`
 func HandoffCommand(projectPath, agent string, jobID int64) string {
 	if projectPath == "" || agent == "" || jobID <= 0 {
 		return ""
+	}
+	if agent == "opencode" {
+		return fmt.Sprintf("cd %s ; opencode --prompt \"Activate caveman mode. garagefab-work %d\"", quotePath(projectPath), jobID)
+	}
+	if agent == "agy" {
+		return fmt.Sprintf("cd %s ; agy -i \"Activate caveman mode. garagefab-work %d\"", quotePath(projectPath), jobID)
 	}
 	return fmt.Sprintf("cd %s ; %s garagefab-work %d", quotePath(projectPath), agent, jobID)
 }
