@@ -52,7 +52,8 @@
 | M3 | Completed |
 | M4 | Completed |
 | SB | Draft (docs-only; experiments pending) |
-| M5–M8 | Not started |
+| M5 | Completed |
+| M6–M8 | Not started |
 
 ## 4. Milestones
 
