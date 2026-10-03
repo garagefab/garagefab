@@ -107,3 +107,26 @@ func LoadProjectConfig(repoPath string) (*ProjectYAML, error) {
 
 	return cfg, nil
 }
+
+// AgentForRole returns the configured agent name for a given SDLC role.
+// If probe is unset, it automatically falls back to the coding agent (HND-2).
+func (p *ProjectYAML) AgentForRole(role string) string {
+	if p == nil {
+		return ""
+	}
+	switch role {
+	case "spec":
+		return p.Agents.Spec
+	case "probe":
+		if p.Agents.Probe != "" {
+			return p.Agents.Probe
+		}
+		return p.Agents.Coding
+	case "coding":
+		return p.Agents.Coding
+	case "review":
+		return p.Agents.Review
+	default:
+		return ""
+	}
+}

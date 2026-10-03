@@ -51,6 +51,7 @@ export interface Job {
   base_sha: string;
   head_sha: string;
   pr_url: string;
+  handoff_command?: string;
   created_at: string;
   updated_at: string;
 }

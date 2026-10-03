@@ -29,9 +29,10 @@ export function JobActions({ job, onApprove, onReject, onRetry, onCancel }: JobA
     status === 'spec_review' ||
     status === 'awaiting_approval';
 
-  const handoffCmd = `garagefab work --job ${job.id}`;
+  const handoffCmd = job.handoff_command;
 
   const handleCopyHandoff = () => {
+    if (!handoffCmd) return;
     navigator.clipboard.writeText(handoffCmd);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -121,28 +122,30 @@ export function JobActions({ job, onApprove, onReject, onRetry, onCancel }: JobA
         </div>
 
         {/* Right: Handoff Command Button (HND-1) */}
-        <div className="flex items-center gap-2">
-          <div className="hidden sm:flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 font-mono text-xs text-slate-400">
-            <span>{handoffCmd}</span>
+        {handoffCmd && (
+          <div className="flex items-center gap-2">
+            <div className="hidden sm:flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 font-mono text-xs text-slate-400">
+              <span>{handoffCmd}</span>
+            </div>
+            <button
+              onClick={handleCopyHandoff}
+              title="Copy handoff CLI command (HND-1)"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-colors shadow-sm cursor-pointer"
+            >
+              {copied ? (
+                <>
+                  <Check className="h-3.5 w-3.5 text-emerald-400" />
+                  <span className="text-emerald-400">Copied!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="h-3.5 w-3.5" />
+                  <span>Handoff</span>
+                </>
+              )}
+            </button>
           </div>
-          <button
-            onClick={handleCopyHandoff}
-            title="Copy handoff CLI command (HND-1)"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-colors shadow-sm cursor-pointer"
-          >
-            {copied ? (
-              <>
-                <Check className="h-3.5 w-3.5 text-emerald-400" />
-                <span className="text-emerald-400">Copied!</span>
-              </>
-            ) : (
-              <>
-                <Copy className="h-3.5 w-3.5" />
-                <span>Handoff</span>
-              </>
-            )}
-          </button>
-        </div>
+        )}
       </div>
 
       {/* Rejection Modal (APR-6) */}
