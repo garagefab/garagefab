@@ -86,6 +86,14 @@ type MockProjectConfigProvider struct {
 }
 
 func (m *MockProjectConfigProvider) GetProjectConfig(ctx context.Context, repoPath string) (*factory.ProjectConfig, error) {
+	if m.cfg != nil && m.cfg.Agents == nil {
+		m.cfg.Agents = map[string]string{
+			factory.RoleSpec:   "fake",
+			factory.RoleProbe:  "fake",
+			factory.RoleCoding: "fake",
+			factory.RoleReview: "fake",
+		}
+	}
 	return m.cfg, nil
 }
 
@@ -438,5 +446,139 @@ func TestEngine_Retry_ResetsCheckpoint_PIP7_WKT5(t *testing.T) {
 	job, _ := store.GetJob(ctx, 1)
 	if job.Status != factory.StatusQueued {
 		t.Fatalf("expected job status queued, got %s", job.Status)
+	}
+}
+
+// TestCodingStep_AgentTimeout_COD10 verifies COD-10:
+// A fake runner returning TimedOut: true makes the step failed with category Blocked
+// and executes no repair attempts.
+func TestCodingStep_AgentTimeout_COD10(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	store.projects[1] = &factory.Project{ID: 1, Name: "test-proj", RepoPath: "/repo", BaseRef: "main"}
+	store.jobs[1] = &factory.Job{
+		ID:           1,
+		ProjectID:    1,
+		Stage:        factory.StageCoding,
+		Status:       factory.StatusQueued,
+		WorktreePath: "/tmp/worktree/1",
+		BaseSHA:      "base123",
+		HeadSHA:      "base123",
+	}
+
+	wtMgr := newMockWorktreeManager()
+	agent := &ScriptableAgentRunner{
+		results: func(n int, req factory.AgentRequest) (*factory.AgentResult, error) {
+			return &factory.AgentResult{
+				ExitCode: 1,
+				TimedOut: true,
+				Summary:  "timed out",
+			}, nil
+		},
+	}
+	cmdRunner := &ScriptableCommandRunner{}
+
+	projCfg := &factory.ProjectConfig{
+		BaseRef: "main",
+		Agents: map[string]string{
+			factory.RoleCoding: "opencode",
+		},
+		AgentTimeout: 10 * time.Minute,
+	}
+
+	engine := factory.NewEngine(store, wtMgr, agent, cmdRunner, t.TempDir())
+	engine.SetProjectConfigProvider(&MockProjectConfigProvider{cfg: projCfg})
+	engine.SetMaxRepairAttempts(3)
+
+	err := engine.ExecuteJob(ctx, 1)
+	if err == nil {
+		t.Fatal("expected ExecuteJob to fail on agent timeout, but got nil")
+	}
+
+	// 1. Verify only 1 attempt was made (no repair loop on Blocked)
+	if len(agent.invocations) != 1 {
+		t.Fatalf("expected exactly 1 agent invocation on timeout, got %d", len(agent.invocations))
+	}
+
+	// 2. Verify request fields passed to agent
+	req := agent.invocations[0]
+	if req.Role != factory.RoleCoding {
+		t.Errorf("expected Role %q, got %q", factory.RoleCoding, req.Role)
+	}
+	if req.Agent != "opencode" {
+		t.Errorf("expected Agent 'opencode', got %q", req.Agent)
+	}
+	if req.Timeout != 10*time.Minute {
+		t.Errorf("expected Timeout 10m, got %v", req.Timeout)
+	}
+
+	// 3. Verify step run recorded with FailureBlocked
+	stepRuns, _ := store.ListStepRunsByJob(ctx, 1)
+	if len(stepRuns) == 0 {
+		t.Fatal("expected at least one step run")
+	}
+	lastStep := stepRuns[len(stepRuns)-1]
+	if lastStep.Status != factory.StepStatusFail {
+		t.Errorf("expected step status fail, got %s", lastStep.Status)
+	}
+	if lastStep.FailureCategory != factory.FailureBlocked {
+		t.Errorf("expected failure category Blocked, got %s", lastStep.FailureCategory)
+	}
+
+	// 4. Verify job state is failed
+	job, _ := store.GetJob(ctx, 1)
+	if job.Status != factory.StatusFailed {
+		t.Errorf("expected job status failed, got %s", job.Status)
+	}
+}
+
+// TestCodingStep_MissingAgent_Blocked verifies that when no agent is configured for a role,
+// the step fails immediately as Blocked with the required error message.
+func TestCodingStep_MissingAgent_Blocked(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	store.projects[1] = &factory.Project{ID: 1, Name: "test-proj", RepoPath: "/repo", BaseRef: "main"}
+	store.jobs[1] = &factory.Job{
+		ID:           1,
+		ProjectID:    1,
+		Stage:        factory.StageCoding,
+		Status:       factory.StatusQueued,
+		WorktreePath: "/tmp/worktree/1",
+		BaseSHA:      "base123",
+		HeadSHA:      "base123",
+	}
+
+	wtMgr := newMockWorktreeManager()
+	agent := &ScriptableAgentRunner{}
+	cmdRunner := &ScriptableCommandRunner{}
+
+	// ProjectConfig with empty agents
+	projCfg := &factory.ProjectConfig{
+		BaseRef: "main",
+		Agents:  map[string]string{}, // coding unconfigured
+	}
+
+	engine := factory.NewEngine(store, wtMgr, agent, cmdRunner, t.TempDir())
+	engine.SetProjectConfigProvider(&MockProjectConfigProvider{cfg: projCfg})
+
+	err := engine.ExecuteJob(ctx, 1)
+	if err == nil {
+		t.Fatal("expected ExecuteJob to fail when agent role unconfigured, got nil")
+	}
+
+	expectedMsg := `no agent configured for role "coding" (set agents.coding in .garagefab/project.yaml)`
+	if !strings.Contains(err.Error(), expectedMsg) {
+		t.Errorf("expected error containing %q, got %q", expectedMsg, err.Error())
+	}
+
+	// Agent runner was never invoked
+	if len(agent.invocations) != 0 {
+		t.Errorf("expected 0 agent invocations, got %d", len(agent.invocations))
+	}
+
+	// Job state is failed
+	job, _ := store.GetJob(ctx, 1)
+	if job.Status != factory.StatusFailed {
+		t.Errorf("expected job status failed, got %s", job.Status)
 	}
 }

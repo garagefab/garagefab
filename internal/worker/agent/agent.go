@@ -25,7 +25,10 @@
 // ==============================================================================
 package agent
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ProcessStartFunc is a callback invoked immediately after an agent subprocess starts.
 // It reports the OS Process ID (PID) and Process Group ID (PGID) to the caller so
@@ -36,11 +39,14 @@ type ProcessStartFunc func(pid, pgid int, startTime int64)
 type AgentRequest struct {
 	JobID          int64             // ID of the job being processed
 	Stage          string            // Current SDLC pipeline stage (e.g. "04_Coding", "05_Independent_Review")
+	Role           string            // SDLC role being executed (e.g. "coding", "spec", "review")
+	Agent          string            // Concrete agent name (e.g. "agy", "opencode", "fake")
 	WorktreePath   string            // Absolute path to the isolated git worktree where the agent will work
 	Prompt         string            // The instruction or task specification for the agent
 	ProjectName    string            // Name of the project repository
 	Env            map[string]string // Environment variables passed to the agent process
 	LogPath        string            // Destination file path for streaming process logs
+	Timeout        time.Duration     // Maximum execution duration before SIGTERM/SIGKILL
 	OnProcessStart ProcessStartFunc  // Optional callback fired once the OS process has launched
 }
 
@@ -49,6 +55,7 @@ type AgentResult struct {
 	ExitCode     int    // OS process exit code (0 indicates success)
 	ArtifactPath string // Path to structured JSON artifact produced by the agent (e.g. review.json)
 	Summary      string // Human-readable summary of actions taken by the agent
+	TimedOut     bool   // True if process was terminated due to timeout
 }
 
 // Runner is the common interface implemented by all AI coding agent adapters.

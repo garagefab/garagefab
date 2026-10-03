@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -53,14 +54,15 @@ var (
 
 // Engine orchestrates pipeline execution across stages (PIP-1..5).
 type Engine struct {
-	store             Store                 // Persistence port
-	wtMgr             WorktreeManager       // Worktree lifecycle port
-	agentRunner       AgentRunner           // AI agent execution port
-	cmdRunner         CommandRunner         // Command runner port
-	guardrailRunner   GuardrailRunner       // Guardrail runner port (GRD-1..4)
-	projCfgProvider   ProjectConfigProvider // Project configuration loader (architecture.md §14)
-	maxRepairAttempts int                   // Maximum automated repair loop attempts (default 3, COD-4)
-	logBaseDir        string                // Base path on disk for step logs (~/.garagefab/logs)
+	store               Store                 // Persistence port
+	wtMgr               WorktreeManager       // Worktree lifecycle port
+	agentRunner         AgentRunner           // AI agent execution port
+	cmdRunner           CommandRunner         // Command runner port
+	guardrailRunner     GuardrailRunner       // Guardrail runner port (GRD-1..4)
+	projCfgProvider     ProjectConfigProvider // Project configuration loader (architecture.md §14)
+	maxRepairAttempts   int                   // Maximum automated repair loop attempts (default 3, COD-4)
+	defaultAgentTimeout time.Duration         // Default timeout boundary for AI agent steps (COD-10)
+	logBaseDir          string                // Base path on disk for step logs (~/.garagefab/logs)
 
 	executingJobs    sync.Map // Thread-safe set tracking actively executing job IDs (PIP-5)
 	activeJobCancels sync.Map // Map[int64]context.CancelFunc for terminating active jobs (PIP-6)
@@ -70,12 +72,20 @@ type Engine struct {
 // NewEngine creates a new pipeline engine instance with injected port dependencies.
 func NewEngine(store Store, wtMgr WorktreeManager, agentRunner AgentRunner, cmdRunner CommandRunner, logBaseDir string) *Engine {
 	return &Engine{
-		store:             store,
-		wtMgr:             wtMgr,
-		agentRunner:       agentRunner,
-		cmdRunner:         cmdRunner,
-		maxRepairAttempts: 3,
-		logBaseDir:        logBaseDir,
+		store:               store,
+		wtMgr:               wtMgr,
+		agentRunner:         agentRunner,
+		cmdRunner:           cmdRunner,
+		maxRepairAttempts:   3,
+		defaultAgentTimeout: 30 * time.Minute,
+		logBaseDir:          logBaseDir,
+	}
+}
+
+// SetDefaultAgentTimeout configures the fallback timeout boundary for AI agent steps (COD-10).
+func (e *Engine) SetDefaultAgentTimeout(d time.Duration) {
+	if d > 0 {
+		e.defaultAgentTimeout = d
 	}
 }
 
@@ -142,6 +152,12 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	if projCfg == nil {
 		projCfg = &ProjectConfig{
 			BaseRef: project.BaseRef,
+			Agents: map[string]string{
+				RoleSpec:   "fake",
+				RoleProbe:  "fake",
+				RoleCoding: "fake",
+				RoleReview: "fake",
+			},
 		}
 		projCfg.Guardrails.ProtectedPaths = []string{"**/*_test.go"}
 	}
@@ -301,13 +317,44 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", prompt, repairFeedback)
 		}
 
+		// Resolve role, agent, and step timeout (HND-2, COD-10)
+		role, _ := RoleForStage(StageClarificationAndSpec)
+		stepTimeout := e.defaultAgentTimeout
+		if projCfg != nil && projCfg.AgentTimeout > 0 {
+			stepTimeout = projCfg.AgentTimeout
+		}
+		agentName := ""
+		if projCfg != nil {
+			agentName = projCfg.AgentForRole(role)
+		}
+		if agentName == "" && os.Getenv("GARAGEFAB_FAKE_AGENT") == "1" {
+			agentName = "fake"
+		}
+		if agentName == "" {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			now := time.Now().UTC()
+			step.EndedAt = &now
+			_ = e.store.UpdateStepRun(ctx, step)
+			errMsg := fmt.Sprintf("no agent configured for role %q (set agents.%s in .garagefab/project.yaml)", role, role)
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, StageClarificationAndSpec, StatusFailed, FailureBlocked, errMsg))
+				return nil
+			})
+			return fmt.Errorf("factory: %s", errMsg)
+		}
+
 		res, err := e.agentRunner.Run(ctx, AgentRequest{
 			JobID:        job.ID,
 			Stage:        StageClarificationAndSpec,
+			Role:         role,
+			Agent:        agentName,
 			WorktreePath: job.WorktreePath,
 			Prompt:       prompt,
 			ProjectName:  project.Name,
 			LogPath:      logPath,
+			Timeout:      stepTimeout,
 			OnProcessStart: func(pid, pgid int, startTime int64) {
 				_ = e.store.CreateProcessRecord(ctx, step.ID, pid, pgid, startTime)
 			},
@@ -318,6 +365,24 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+
+		// Handle agent process timeout (COD-10)
+		if res != nil && res.TimedOut {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			code := 1
+			if res != nil {
+				code = res.ExitCode
+			}
+			step.ExitCode = &code
+			_ = e.store.UpdateStepRun(ctx, step)
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageClarificationAndSpec, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageClarificationAndSpec, StatusFailed, FailureBlocked))
+				return nil
+			})
+			return fmt.Errorf("factory: spec agent timed out: %s", FailureBlocked)
 		}
 
 		if err != nil || (res != nil && res.ExitCode != 0) {
@@ -506,13 +571,44 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 			prompt = fmt.Sprintf("%s\n\n[Automated Repair Feedback on Previous Attempt]\n%s", prompt, repairFeedback)
 		}
 
+		// Resolve role, agent, and step timeout (HND-2, COD-10)
+		role, _ := RoleForStage(StageCoding)
+		stepTimeout := e.defaultAgentTimeout
+		if projCfg != nil && projCfg.AgentTimeout > 0 {
+			stepTimeout = projCfg.AgentTimeout
+		}
+		agentName := ""
+		if projCfg != nil {
+			agentName = projCfg.AgentForRole(role)
+		}
+		if agentName == "" && os.Getenv("GARAGEFAB_FAKE_AGENT") == "1" {
+			agentName = "fake"
+		}
+		if agentName == "" {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			now := time.Now().UTC()
+			step.EndedAt = &now
+			_ = e.store.UpdateStepRun(ctx, step)
+			errMsg := fmt.Sprintf("no agent configured for role %q (set agents.%s in .garagefab/project.yaml)", role, role)
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, StageCoding, StatusFailed, FailureBlocked, errMsg))
+				return nil
+			})
+			return fmt.Errorf("factory: %s", errMsg)
+		}
+
 		res, err := e.agentRunner.Run(ctx, AgentRequest{
 			JobID:        job.ID,
 			Stage:        StageCoding,
+			Role:         role,
+			Agent:        agentName,
 			WorktreePath: job.WorktreePath,
 			Prompt:       prompt,
 			ProjectName:  project.Name,
 			LogPath:      logPath,
+			Timeout:      stepTimeout,
 			OnProcessStart: func(pid, pgid int, startTime int64) {
 				_ = e.store.CreateProcessRecord(ctx, step.ID, pid, pgid, startTime)
 			},
@@ -530,11 +626,14 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 		failureInput.Attempt = currentAttempt
 		failureInput.MaxAttempts = maxAttempts
 
-		if err != nil || (res != nil && res.ExitCode != 0) {
+		if (res != nil && res.TimedOut) || err != nil || (res != nil && res.ExitCode != 0) {
 			agentFailed = true
 			code := 1
 			if res != nil {
 				code = res.ExitCode
+				if res.TimedOut {
+					failureInput.TimedOut = true
+				}
 			}
 			step.ExitCode = &code
 			failureInput.ExitCode = code
@@ -855,13 +954,43 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 	}
 
 	// 4. Execute Review Agent
+	roleReview, _ := RoleForStage(StageIndependentReview)
+	stepTimeout := e.defaultAgentTimeout
+	if projCfg != nil && projCfg.AgentTimeout > 0 {
+		stepTimeout = projCfg.AgentTimeout
+	}
+	agentNameReview := ""
+	if projCfg != nil {
+		agentNameReview = projCfg.AgentForRole(roleReview)
+	}
+	if agentNameReview == "" && os.Getenv("GARAGEFAB_FAKE_AGENT") == "1" {
+		agentNameReview = "fake"
+	}
+	if agentNameReview == "" {
+		stepReview.Status = StepStatusFail
+		stepReview.FailureCategory = FailureBlocked
+		now := time.Now().UTC()
+		stepReview.EndedAt = &now
+		_ = e.store.UpdateStepRun(ctx, stepReview)
+		errMsg := fmt.Sprintf("no agent configured for role %q (set agents.%s in .garagefab/project.yaml)", roleReview, roleReview)
+		_ = e.store.InTx(ctx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, StageIndependentReview, StatusFailed, FailureBlocked, errMsg))
+			return nil
+		})
+		return fmt.Errorf("factory: %s", errMsg)
+	}
+
 	resReview, runErr := e.agentRunner.Run(ctx, AgentRequest{
 		JobID:        job.ID,
 		Stage:        StageIndependentReview,
+		Role:         roleReview,
+		Agent:        agentNameReview,
 		WorktreePath: job.WorktreePath,
 		Prompt:       promptBuilder.String(),
 		ProjectName:  project.Name,
 		LogPath:      logPathReview,
+		Timeout:      stepTimeout,
 		OnProcessStart: func(pid, pgid int, startTime int64) {
 			_ = e.store.CreateProcessRecord(ctx, stepReview.ID, pid, pgid, startTime)
 		},
@@ -869,6 +998,21 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 
 	nowReview := time.Now().UTC()
 	stepReview.EndedAt = &nowReview
+
+	// Review agent process timeout (COD-10)
+	if resReview != nil && resReview.TimedOut {
+		stepReview.Status = StepStatusFail
+		stepReview.FailureCategory = FailureBlocked
+		code := 1
+		stepReview.ExitCode = &code
+		_ = e.store.UpdateStepRun(ctx, stepReview)
+		_ = e.store.InTx(ctx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(ctx, job.ID, StageIndependentReview, StatusFailed)
+			_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageIndependentReview, StatusFailed, FailureBlocked))
+			return nil
+		})
+		return fmt.Errorf("factory: review agent timed out: %s", FailureBlocked)
+	}
 
 	// Review agent crash or execution error (REV-6)
 	if runErr != nil || (resReview != nil && resReview.ExitCode != 0) {

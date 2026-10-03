@@ -151,6 +151,10 @@ func TestScenario2_Clarification_SPC1_2_3(t *testing.T) {
 	_ = os.MkdirAll(gfDir, 0755)
 	projYaml := `
 base_ref: main
+agents:
+  spec: agy
+  coding: opencode
+  review: agy
 commands:
   build: []
   test: []
@@ -444,6 +448,10 @@ func TestScenario4_Rejection_APR6_COD5(t *testing.T) {
 	_ = os.MkdirAll(gfDir, 0755)
 	projYaml := `
 base_ref: main
+agents:
+  spec: agy
+  coding: opencode
+  review: agy
 commands:
   build: []
   test: []

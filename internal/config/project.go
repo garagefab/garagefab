@@ -19,13 +19,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
+// ProjectAgents defines the AI agent implementation assigned to each SDLC role (HND-2, architecture.md §14).
+type ProjectAgents struct {
+	Spec   string `yaml:"spec"`   // Agent for 02_Clarification_and_Spec (agy | opencode)
+	Probe  string `yaml:"probe"`  // Agent for 03_Failing_Probe (defaults to coding if omitted)
+	Coding string `yaml:"coding"` // Agent for 04_Coding
+	Review string `yaml:"review"` // Agent for 05_Independent_Review
+}
+
+// ProjectTimeouts defines optional step timeout overrides per project.
+type ProjectTimeouts struct {
+	Agent time.Duration `yaml:"agent"` // Maximum runtime for agent steps in this project (COD-10)
+}
+
 // ProjectYAML defines the schema for `<repo>/.garagefab/project.yaml`.
 type ProjectYAML struct {
-	BaseRef  string `yaml:"base_ref"`
+	BaseRef  string          `yaml:"base_ref"`
+	Agents   ProjectAgents   `yaml:"agents"`
+	Timeouts ProjectTimeouts `yaml:"timeouts"`
 	Commands struct {
 		Build []string `yaml:"build"`
 		Test  []string `yaml:"test"`
@@ -58,6 +74,35 @@ func LoadProjectConfig(repoPath string) (*ProjectYAML, error) {
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("config: unmarshal project.yaml: %w", err)
+	}
+
+	// Validate agent assignments and apply defaults (HND-2)
+	validateAgent := func(role, name string) error {
+		if name == "" {
+			return nil
+		}
+		if name != "agy" && name != "opencode" {
+			return fmt.Errorf("config: project.yaml: agents.%s: unknown agent %q (want agy|opencode)", role, name)
+		}
+		return nil
+	}
+
+	if err := validateAgent("spec", cfg.Agents.Spec); err != nil {
+		return nil, err
+	}
+	if err := validateAgent("probe", cfg.Agents.Probe); err != nil {
+		return nil, err
+	}
+	if err := validateAgent("coding", cfg.Agents.Coding); err != nil {
+		return nil, err
+	}
+	if err := validateAgent("review", cfg.Agents.Review); err != nil {
+		return nil, err
+	}
+
+	// Probe defaults to coding agent if omitted (HND-2)
+	if cfg.Agents.Probe == "" {
+		cfg.Agents.Probe = cfg.Agents.Coding
 	}
 
 	return cfg, nil
