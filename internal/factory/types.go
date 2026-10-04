@@ -273,9 +273,13 @@ type GuardrailViolation struct {
 	Status string `json:"status"` // "M", "D", "R"
 }
 
-// GuardrailRunner defines the outbound port for validating workspace integrity and path restrictions (GRD-1..4).
+// GuardrailRunner defines the outbound port for validating workspace integrity and path restrictions (GRD-1..5).
 type GuardrailRunner interface {
 	CheckProtectedPaths(ctx context.Context, workDir, stepStartSHA string, patterns []string) ([]GuardrailViolation, error)
+	// CheckProbeScope verifies that a probe step only added/changed files matching testPatterns
+	// (GRD-5), plus the probe.json artifact (artifactGlob). Empty testPatterns means no
+	// restriction.
+	CheckProbeScope(ctx context.Context, workDir, stepStartSHA string, testPatterns []string, artifactGlob string) ([]GuardrailViolation, error)
 }
 
 // ProjectCommands defines test/build/lint verification commands for a project (COD-2, COD-3).
@@ -285,9 +289,10 @@ type ProjectCommands struct {
 	Lint  []string `yaml:"lint"`
 }
 
-// ProjectGuardrails defines custom path patterns and verification scripts (GRD-1, GRD-3).
+// ProjectGuardrails defines custom path patterns and verification scripts (GRD-1, GRD-3, GRD-5).
 type ProjectGuardrails struct {
 	ProtectedPaths []string `yaml:"protected_paths"`
+	TestPaths      []string `yaml:"test_paths"`
 	Commands       []string `yaml:"commands"`
 }
 

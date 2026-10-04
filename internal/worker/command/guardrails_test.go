@@ -140,3 +140,153 @@ func TestCheckProtectedPaths_GRD1(t *testing.T) {
 		t.Fatalf("expected 1 violation for deleted service_test.go, got %d: %v", len(violations), violations)
 	}
 }
+
+// TestCheckProbeScope_GRD5 verifies that a failing-probe step is confined to the configured
+// test_paths globs plus the job's probe.json artifact (GRD-5).
+func TestCheckProbeScope_GRD5(t *testing.T) {
+	ctx := context.Background()
+	repoDir := t.TempDir()
+
+	runGit := func(args ...string) string {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoDir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %s (%v)", args, string(out), err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	runGit("init")
+	runGit("config", "user.name", "Tester")
+	runGit("config", "user.email", "tester@garagefab.local")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\nfunc main() {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "service_test.go"), []byte("package main\n// test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "initial commit")
+	baseSHA := runGit("rev-parse", "HEAD")
+
+	resetToBase := func() {
+		runGit("reset", "--hard", baseSHA)
+		runGit("clean", "-fd")
+	}
+
+	testPatterns := []string{"**/*_test.go"}
+	artifactGlob := ".garagefab/jobs/1/probe.json"
+
+	// Case 1: Editing a non-test source file -> violation.
+	resetToBase()
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\nfunc main() { /* edited */ }"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	violations, err := command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(violations) != 1 || violations[0].Path != "main.go" {
+		t.Fatalf("expected 1 violation for main.go, got %v", violations)
+	}
+
+	// Case 2: Adding a new test file -> allowed.
+	resetToBase()
+	if err := os.WriteFile(filepath.Join(repoDir, "new_feature_test.go"), []byte("package main\n// new test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	violations, err = command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected 0 violations for a new test file, got %v", violations)
+	}
+
+	// Case 3: Writing probe.json -> never a violation.
+	resetToBase()
+	artifactDir := filepath.Join(repoDir, ".garagefab", "jobs", "1")
+	if err := os.MkdirAll(artifactDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "probe.json"), []byte(`{"command":"go test ./..."}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	violations, err = command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected 0 violations for probe.json, got %v", violations)
+	}
+
+	// Case 4: Adding a staged non-test source file -> violation.
+	resetToBase()
+	if err := os.MkdirAll(filepath.Join(repoDir, "src"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "src", "newutil.go"), []byte("package src\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	violations, err = command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(violations) != 1 || violations[0].Path != "src/newutil.go" {
+		t.Fatalf("expected 1 violation for src/newutil.go, got %v", violations)
+	}
+
+	// Case 5: Editing an existing test file -> allowed.
+	resetToBase()
+	if err := os.WriteFile(filepath.Join(repoDir, "service_test.go"), []byte("package main\n// edited test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	violations, err = command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected 0 violations for an edited test file, got %v", violations)
+	}
+}
+
+// TestCheckProbeScope_DefaultNoRestriction_GRD5 verifies that an empty test_paths list means
+// the probe step is unrestricted (GRD-5).
+func TestCheckProbeScope_DefaultNoRestriction_GRD5(t *testing.T) {
+	ctx := context.Background()
+	repoDir := t.TempDir()
+
+	runGit := func(args ...string) string {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoDir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %s (%v)", args, string(out), err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	runGit("init")
+	runGit("config", "user.name", "Tester")
+	runGit("config", "user.email", "tester@garagefab.local")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\nfunc main() {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "initial commit")
+	baseSHA := runGit("rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\nfunc main() { /* edited */ }"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	violations, err := command.CheckProbeScope(ctx, repoDir, baseSHA, nil, ".garagefab/jobs/1/probe.json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected no restriction with empty test_paths, got %v", violations)
+	}
+}

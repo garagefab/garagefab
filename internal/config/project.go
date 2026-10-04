@@ -45,6 +45,14 @@ type ProjectGitHub struct {
 	PRIssueKeyword string `yaml:"pr_issue_keyword"` // Issue closing keyword for PR body ("closes" | "refs", default: "closes")
 }
 
+// ProjectGuardrails defines protected path patterns, the probe test scope, and custom
+// verification commands for a project (GRD-1, GRD-3, GRD-5).
+type ProjectGuardrails struct {
+	ProtectedPaths []string `yaml:"protected_paths"` // GRD-1: existing files agents must not modify
+	TestPaths      []string `yaml:"test_paths"`      // GRD-5: probe step may only change these (empty = no restriction)
+	Commands       []string `yaml:"commands"`        // GRD-3: custom verification commands
+}
+
 // ProjectYAML defines the schema for `<repo>/.garagefab/project.yaml`.
 type ProjectYAML struct {
 	BaseRef  string          `yaml:"base_ref"`
@@ -56,11 +64,8 @@ type ProjectYAML struct {
 		Test  []string `yaml:"test"`
 		Lint  []string `yaml:"lint"`
 	} `yaml:"commands"`
-	Guardrails struct {
-		ProtectedPaths []string `yaml:"protected_paths"`
-		Commands       []string `yaml:"commands"`
-	} `yaml:"guardrails"`
-	MaxConcurrentJobs int `yaml:"max_concurrent_jobs"`
+	Guardrails        ProjectGuardrails `yaml:"guardrails"`
+	MaxConcurrentJobs int               `yaml:"max_concurrent_jobs"`
 }
 
 // LoadProjectConfig reads and parses `<repo>/.garagefab/project.yaml`.

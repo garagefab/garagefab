@@ -153,3 +153,64 @@ func CheckProtectedPaths(ctx context.Context, workDir, stepStartSHA string, prot
 
 	return violations, nil
 }
+
+// CheckProbeScope verifies that a failing-probe step only touched files within the configured
+// test scope (GRD-5). Unlike CheckProtectedPaths (GRD-1), this check treats newly Added files
+// as suspicious too: the probe agent is expected to write test files and the probe.json
+// artifact, and nothing else.
+//
+// Rules:
+//   - Empty testPatterns means "no restriction" -> no violations.
+//   - A changed path is allowed iff it matches any testPatterns glob, or matches artifactGlob
+//     (the job's probe.json).
+//   - Any other added/modified/deleted/renamed path is a violation.
+func CheckProbeScope(ctx context.Context, workDir, stepStartSHA string, testPatterns []string, artifactGlob string) ([]GuardrailViolation, error) {
+	if len(testPatterns) == 0 || stepStartSHA == "" {
+		return nil, nil
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "-C", workDir, "diff", "--name-status", stepStartSHA)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("guardrails: git diff --name-status: %w", err)
+	}
+
+	allowed := func(path string) bool {
+		if artifactGlob != "" && MatchPathPattern(artifactGlob, path) {
+			return true
+		}
+		for _, pattern := range testPatterns {
+			if MatchPathPattern(pattern, path) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var violations []GuardrailViolation
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+
+		action := parts[0][:1]
+		for _, f := range parts[1:] {
+			f = filepath.ToSlash(filepath.Clean(f))
+			if !allowed(f) {
+				violations = append(violations, GuardrailViolation{
+					Path:   f,
+					Status: action,
+				})
+			}
+		}
+	}
+
+	return violations, nil
+}
