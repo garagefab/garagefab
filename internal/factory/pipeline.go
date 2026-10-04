@@ -1177,6 +1177,12 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 					Attempt:            currentAttempt,
 					MaxAttempts:        maxAttempts,
 				})
+				// Persist the guardrail failure on the agent step run (GRD-4). The agent process
+				// exited 0, but this attempt violated the guardrail, so it must not remain recorded
+				// as success — otherwise the repair attempt has no discoverable cause in step_runs.
+				step.Status = StepStatusFail
+				step.FailureCategory = category
+				_ = e.store.UpdateStepRun(ctx, step)
 				if category == FailureFlawed && currentAttempt < maxAttempts {
 					repairFeedback = fmt.Sprintf("Guardrail violation: you modified existing protected file(s): %s. You must restore them.", strings.Join(paths, ", "))
 					attempt++
@@ -1215,6 +1221,11 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 						Attempt:     currentAttempt,
 						MaxAttempts: maxAttempts,
 					})
+					// Persist the guardrail failure on the agent step run (GRD-4), as for the
+					// protected-path check above.
+					step.Status = StepStatusFail
+					step.FailureCategory = category
+					_ = e.store.UpdateStepRun(ctx, step)
 					if category == FailureFlawed && currentAttempt < maxAttempts {
 						repairFeedback = fmt.Sprintf("Custom guardrail command failed (%s):\n%s\n%s", gCmd, stdout, stderr)
 						attempt++

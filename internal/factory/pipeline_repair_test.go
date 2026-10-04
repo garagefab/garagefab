@@ -372,6 +372,84 @@ func TestEngine_Guardrail_Violation_GRD1_GRD4(t *testing.T) {
 	if !strings.Contains(prompt2, "Guardrail violation: you modified existing protected file(s): auth_test.go") {
 		t.Fatalf("expected guardrail violation feedback in repair prompt, got: %s", prompt2)
 	}
+
+	// GRD-4: the guardrail-failed attempt must be persisted as fail/Flawed, not success,
+	// so the repair attempt has a discoverable cause in step_runs.
+	stepRuns, _ := store.ListStepRunsByJob(ctx, 1)
+	var codingAgentSteps []*factory.StepRun
+	for _, s := range stepRuns {
+		if s.Stage == factory.StageCoding && s.Kind == factory.StepKindAgent {
+			codingAgentSteps = append(codingAgentSteps, s)
+		}
+	}
+	if len(codingAgentSteps) != 2 {
+		t.Fatalf("expected 2 coding agent step runs, got %d", len(codingAgentSteps))
+	}
+	if codingAgentSteps[0].Status != factory.StepStatusFail || codingAgentSteps[0].FailureCategory != factory.FailureFlawed {
+		t.Errorf("attempt 1 guardrail violation must be recorded fail/Flawed, got status=%s category=%s",
+			codingAgentSteps[0].Status, codingAgentSteps[0].FailureCategory)
+	}
+	if codingAgentSteps[1].Status != factory.StepStatusSuccess {
+		t.Errorf("attempt 2 must be recorded success, got status=%s", codingAgentSteps[1].Status)
+	}
+}
+
+// TestEngine_GuardrailViolation_Terminal_RecordsFail_GRD4 verifies that when a guardrail
+// violation is terminal (no repair budget left), the coding agent step run is persisted as
+// failed with a category instead of success, matching the job's failed state (GRD-4).
+func TestEngine_GuardrailViolation_Terminal_RecordsFail_GRD4(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	store.projects[1] = &factory.Project{ID: 1, Name: "test-proj", RepoPath: "/repo", BaseRef: "main"}
+	store.jobs[1] = &factory.Job{ID: 1, ProjectID: 1, Stage: factory.StageIntent, Status: factory.StatusQueued, Intent: "fix bug"}
+
+	wtMgr := newMockWorktreeManager()
+	agent := &ScriptableAgentRunner{}
+	cmdRunner := &ScriptableCommandRunner{}
+
+	// Always violates: no attempt can satisfy the guardrail, so it terminates after one try.
+	guardrails := &dynamicGuardrailRunner{
+		checkFn: func() []factory.GuardrailViolation {
+			return []factory.GuardrailViolation{{Path: "auth_test.go", Status: "M"}}
+		},
+	}
+
+	projCfg := &factory.ProjectConfig{
+		Guardrails: factory.ProjectGuardrails{
+			ProtectedPaths: []string{"**/*_test.go"},
+		},
+	}
+
+	engine := factory.NewEngine(store, wtMgr, agent, cmdRunner, t.TempDir())
+	engine.SetGuardrailRunner(guardrails)
+	engine.SetProjectConfigProvider(&MockProjectConfigProvider{cfg: projCfg})
+	engine.SetMaxRepairAttempts(1)
+
+	if err := engine.ExecuteJob(ctx, 1); err == nil {
+		t.Fatal("expected ExecuteJob to fail on terminal guardrail violation, got nil")
+	}
+
+	stepRuns, _ := store.ListStepRunsByJob(ctx, 1)
+	var codingAgent *factory.StepRun
+	for _, s := range stepRuns {
+		if s.Stage == factory.StageCoding && s.Kind == factory.StepKindAgent {
+			codingAgent = s
+		}
+	}
+	if codingAgent == nil {
+		t.Fatal("expected a coding agent step run")
+	}
+	if codingAgent.Status != factory.StepStatusFail {
+		t.Errorf("terminal guardrail violation must record step status fail, got %s", codingAgent.Status)
+	}
+	if codingAgent.FailureCategory != factory.FailureManual {
+		t.Errorf("expected failure category Manual on exhausted attempts, got %s", codingAgent.FailureCategory)
+	}
+
+	job, _ := store.GetJob(ctx, 1)
+	if job.Status != factory.StatusFailed {
+		t.Errorf("expected job status failed, got %s", job.Status)
+	}
 }
 
 type dynamicGuardrailRunner struct {
