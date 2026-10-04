@@ -3,6 +3,7 @@ package factory_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +12,36 @@ import (
 
 	"github.com/garagefab/garagefab/internal/factory"
 )
+
+// erroringProbeGuardrail makes the GRD-5 scope check fail (fail-closed test).
+type erroringProbeGuardrail struct{}
+
+func (erroringProbeGuardrail) CheckProtectedPaths(context.Context, string, string, []string) ([]factory.GuardrailViolation, error) {
+	return nil, nil
+}
+
+func (erroringProbeGuardrail) CheckProbeScope(context.Context, string, string, []string, string) ([]factory.GuardrailViolation, error) {
+	return nil, errors.New("git diff failed")
+}
+
+// TestProbe_ScopeCheckError_Blocked verifies that a failing GRD-5 scope check fails closed
+// (Blocked) instead of silently passing (GRD-5).
+func TestProbe_ScopeCheckError_Blocked(t *testing.T) {
+	ctx := context.Background()
+	engine, store, _, _, _ := newProbeTestEngine(t, []string{probeJSON("fail-then-pass-cmd")})
+	engine.SetProjectConfigProvider(&MockProjectConfigProvider{cfg: &factory.ProjectConfig{
+		Guardrails: factory.ProjectGuardrails{TestPaths: []string{"**/*_test.go"}},
+	}})
+	engine.SetGuardrailRunner(erroringProbeGuardrail{})
+
+	if err := engine.ExecuteJob(ctx, 1); err == nil {
+		t.Fatal("expected ExecuteJob to fail when the probe scope check errors")
+	}
+	job, _ := store.GetJob(ctx, 1)
+	if job.Stage != factory.StageFailingProbe || job.Status != factory.StatusFailed {
+		t.Fatalf("expected 03/failed, got %s/%s", job.Stage, job.Status)
+	}
+}
 
 // probeScriptRunner is a scripted agent runner: on each probe-stage call it writes the next
 // probe.json payload into the mock worktree and records the rendered prompt.
@@ -334,7 +365,7 @@ func TestEvidence_IncludesProbeResult_PRB5(t *testing.T) {
 	}
 	review := &factory.ReviewReport{Decision: "approve", Summary: "ok"}
 
-	summary, md := factory.BuildEvidence(&factory.Job{ID: 1, Title: "t", HeadSHA: "abc"}, steps, review, nil)
+	summary, md := factory.BuildEvidence(&factory.Job{ID: 1, WorkType: factory.WorkTypeBugFix, Title: "t", HeadSHA: "abc"}, steps, review, nil)
 	if summary.Probe.Status != "pass" {
 		t.Fatalf("expected probe status pass, got %q", summary.Probe.Status)
 	}

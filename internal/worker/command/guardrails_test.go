@@ -191,12 +191,11 @@ func TestCheckProbeScope_GRD5(t *testing.T) {
 		t.Fatalf("expected 1 violation for main.go, got %v", violations)
 	}
 
-	// Case 2: Adding a new test file -> allowed.
+	// Case 2: Adding a new UNSTAGED (untracked) test file -> allowed.
 	resetToBase()
 	if err := os.WriteFile(filepath.Join(repoDir, "new_feature_test.go"), []byte("package main\n// new test"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	runGit("add", ".")
 	violations, err = command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -205,7 +204,7 @@ func TestCheckProbeScope_GRD5(t *testing.T) {
 		t.Fatalf("expected 0 violations for a new test file, got %v", violations)
 	}
 
-	// Case 3: Writing probe.json -> never a violation.
+	// Case 3: Writing an UNSTAGED probe.json -> never a violation.
 	resetToBase()
 	artifactDir := filepath.Join(repoDir, ".garagefab", "jobs", "1")
 	if err := os.MkdirAll(artifactDir, 0755); err != nil {
@@ -214,7 +213,6 @@ func TestCheckProbeScope_GRD5(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(artifactDir, "probe.json"), []byte(`{"command":"go test ./..."}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	runGit("add", ".")
 	violations, err = command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -223,7 +221,8 @@ func TestCheckProbeScope_GRD5(t *testing.T) {
 		t.Fatalf("expected 0 violations for probe.json, got %v", violations)
 	}
 
-	// Case 4: Adding a staged non-test source file -> violation.
+	// Case 4: Adding an UNSTAGED (untracked) non-test source file -> violation.
+	// Agents do not stage their work, so this is the normal path (GRD-5).
 	resetToBase()
 	if err := os.MkdirAll(filepath.Join(repoDir, "src"), 0755); err != nil {
 		t.Fatal(err)
@@ -231,13 +230,29 @@ func TestCheckProbeScope_GRD5(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoDir, "src", "newutil.go"), []byte("package src\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	runGit("add", ".")
 	violations, err = command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(violations) != 1 || violations[0].Path != "src/newutil.go" {
 		t.Fatalf("expected 1 violation for src/newutil.go, got %v", violations)
+	}
+
+	// Case 4b: A STAGED non-test source file is still a violation (tracked-diff path).
+	resetToBase()
+	if err := os.MkdirAll(filepath.Join(repoDir, "src"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "src", "staged.go"), []byte("package src\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	violations, err = command.CheckProbeScope(ctx, repoDir, baseSHA, testPatterns, artifactGlob)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(violations) != 1 || violations[0].Path != "src/staged.go" {
+		t.Fatalf("expected 1 violation for src/staged.go, got %v", violations)
 	}
 
 	// Case 5: Editing an existing test file -> allowed.

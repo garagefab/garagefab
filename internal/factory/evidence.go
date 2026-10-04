@@ -146,7 +146,10 @@ func BuildEvidence(job *Job, steps []*StepRun, review *ReviewReport, diff *DiffS
 	summary.DrillDowns["diff"] = fmt.Sprintf("/api/jobs/%d/diff", job.ID)
 	summary.DrillDowns["spec"] = fmt.Sprintf("/api/jobs/%d/artifacts/spec", job.ID)
 	summary.DrillDowns["review"] = fmt.Sprintf("/api/jobs/%d/artifacts/review", job.ID)
-	summary.DrillDowns["probe"] = fmt.Sprintf("/api/jobs/%d/artifacts/probe", job.ID)
+	// The probe artifact only exists for bug fixes.
+	if job.WorkType == WorkTypeBugFix {
+		summary.DrillDowns["probe"] = fmt.Sprintf("/api/jobs/%d/artifacts/probe", job.ID)
+	}
 	summary.DrillDowns["evidence"] = fmt.Sprintf("/api/jobs/%d/artifacts/evidence", job.ID)
 
 	// 5. Generate Markdown content for evidence.md (APR-4)
@@ -190,6 +193,9 @@ func BuildEvidence(job *Job, steps []*StepRun, review *ReviewReport, diff *DiffS
 	fmt.Fprintf(&sb, "- [Full Diff](%s)\n", summary.DrillDowns["diff"])
 	fmt.Fprintf(&sb, "- [Job Spec](%s)\n", summary.DrillDowns["spec"])
 	fmt.Fprintf(&sb, "- [Full Review Report](%s)\n", summary.DrillDowns["review"])
+	if _, ok := summary.DrillDowns["probe"]; ok {
+		fmt.Fprintf(&sb, "- [Probe Report](%s)\n", summary.DrillDowns["probe"])
+	}
 
 	return summary, sb.String()
 }

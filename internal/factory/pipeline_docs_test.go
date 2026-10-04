@@ -116,4 +116,8 @@ func TestDocsProfile_Approved_CreatesPR_OQ2(t *testing.T) {
 	if job.PRURL == "" {
 		t.Fatal("expected a persisted PR URL")
 	}
+	// The evidence checkpoint head must be persisted, not only held in memory.
+	if job.HeadSHA != wtMgr.checkpoints[1] {
+		t.Fatalf("expected the persisted head SHA to match the last checkpoint %q, got %q", wtMgr.checkpoints[1], job.HeadSHA)
+	}
 }

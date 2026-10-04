@@ -175,6 +175,14 @@ func CheckProbeScope(ctx context.Context, workDir, stepStartSHA string, testPatt
 		return nil, fmt.Errorf("guardrails: git diff --name-status: %w", err)
 	}
 
+	// `git diff` ignores untracked files, and agents do not stage their work. List untracked
+	// files separately; they count as Added so the probe cannot smuggle in a new file.
+	untrackedCmd := exec.CommandContext(ctx, "git", "-C", workDir, "ls-files", "--others", "--exclude-standard")
+	untrackedOut, err := untrackedCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("guardrails: git ls-files --others: %w", err)
+	}
+
 	allowed := func(path string) bool {
 		if artifactGlob != "" && MatchPathPattern(artifactGlob, path) {
 			return true
@@ -209,6 +217,22 @@ func CheckProbeScope(ctx context.Context, workDir, stepStartSHA string, testPatt
 					Status: action,
 				})
 			}
+		}
+	}
+
+	// Untracked (not-yet-staged) files are treated as Added.
+	untrackedScanner := bufio.NewScanner(strings.NewReader(string(untrackedOut)))
+	for untrackedScanner.Scan() {
+		f := strings.TrimSpace(untrackedScanner.Text())
+		if f == "" {
+			continue
+		}
+		f = filepath.ToSlash(filepath.Clean(f))
+		if !allowed(f) {
+			violations = append(violations, GuardrailViolation{
+				Path:   f,
+				Status: "A",
+			})
 		}
 	}
 
