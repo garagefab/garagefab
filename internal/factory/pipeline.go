@@ -329,6 +329,16 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 	var repairFeedback string
 	attempt := 0
 
+	// Resolve the project's protected-path globs once, before the retry loop: the list is stable
+	// for the whole stage, and resolving it here lets the spec prompt carry the GRD-1 obligation so
+	// the spec agent is instructed not to plan an edit to a protected file. The nil check mirrors
+	// the coding stage's guard; ExecuteJob substitutes a default config when none is resolvable, so
+	// projCfg is non-nil at this call site today, but the guard keeps the helper safe either way.
+	var protectedPaths []string
+	if projCfg != nil {
+		protectedPaths = projCfg.Guardrails.ProtectedPaths
+	}
+
 	for attempt < maxAttempts {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -361,6 +371,8 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 			clarificationContent = string(clarData)
 		}
 
+		// ProtectedPaths is included so the spec's Implementation Plan stays inside GRD-1
+		// limits; the template omits the section entirely when the list is empty.
 		promptData := PromptData{
 			JobID:          job.ID,
 			WorkType:       job.WorkType,
@@ -368,6 +380,7 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 			ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
 			Clarification:  clarificationContent,
 			RepairFeedback: repairFeedback,
+			ProtectedPaths: protectedPaths,
 		}
 		prompt, err := RenderPrompt(RoleSpec, promptData)
 		if err != nil {
@@ -1177,6 +1190,12 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 					Attempt:            currentAttempt,
 					MaxAttempts:        maxAttempts,
 				})
+				// Persist the guardrail failure on the agent step run (GRD-4). The agent process
+				// exited 0, but this attempt violated the guardrail, so it must not remain recorded
+				// as success — otherwise the repair attempt has no discoverable cause in step_runs.
+				step.Status = StepStatusFail
+				step.FailureCategory = category
+				_ = e.store.UpdateStepRun(ctx, step)
 				if category == FailureFlawed && currentAttempt < maxAttempts {
 					repairFeedback = fmt.Sprintf("Guardrail violation: you modified existing protected file(s): %s. You must restore them.", strings.Join(paths, ", "))
 					attempt++
@@ -1215,6 +1234,11 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 						Attempt:     currentAttempt,
 						MaxAttempts: maxAttempts,
 					})
+					// Persist the guardrail failure on the agent step run (GRD-4), as for the
+					// protected-path check above.
+					step.Status = StepStatusFail
+					step.FailureCategory = category
+					_ = e.store.UpdateStepRun(ctx, step)
 					if category == FailureFlawed && currentAttempt < maxAttempts {
 						repairFeedback = fmt.Sprintf("Custom guardrail command failed (%s):\n%s\n%s", gCmd, stdout, stderr)
 						attempt++

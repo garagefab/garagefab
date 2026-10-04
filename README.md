@@ -48,6 +48,17 @@ make ci
 ./bin/garagefab install-skills
 ```
 
+## Configuration
+
+Per-project behavior is configured in `<repo>/.garagefab/project.yaml` (full reference:
+[`03_spec.md` §6.5](PROJECT_DOCS/03_spec.md#65-configuration-reference)). Guardrails protect
+existing files from agent edits: `guardrails.protected_paths` (default `["**/*_test.go"]`) prevents
+an agent step from modifying, deleting, or renaming an **existing** file matching a pattern;
+**newly added** files are allowed. The effective list (default or configured) is passed to both the
+spec and coding prompts, so the spec prompt instructs the agent not to plan edits to a protected
+file. To permit editing an existing protected file, narrow `guardrails.protected_paths` for that
+project.
+
 ## Documentation
 
 Full architectural and design specifications are located in [`PROJECT_DOCS/`](PROJECT_DOCS/):
