@@ -17,7 +17,7 @@ all: build
 ui:
 	@if [ -d ui ] && [ -f ui/package.json ]; then \
 		echo "Building UI..."; \
-		(cd ui && npm ci && npm run build); \
+		(cd ui && npm ci --include=dev && npm run build); \
 	else \
 		echo "UI directory not ready yet, skipping UI build."; \
 	fi
