@@ -54,7 +54,7 @@
 | SB | Cancelled (superseded by D22/D23) |
 | M5 | Completed |
 | M6 | Completed |
-| M7 | In progress (detailed plan: `milestones/M7.md`) |
+| M7 | Completed (branch `m7-remaining-profiles-and-hardening`) |
 | M8 | Not started |
 
 ## 4. Milestones
@@ -148,7 +148,7 @@ Deliverables:
 **Goal:** All four work types, plus the robustness bar.
 **Covers:** `PRB-1..5`, `COD-8`, `GRD-5`, the `docs` profile paths, `LOG-6`, `CLI-8`, edge-case table (spec §8), `NFR-4..7`.
 
-**Exit criteria:** Scenario 6 passes; performance, memory, and concurrency checks meet the NFR measures; the edge-case table has tests.
+**Exit criteria:** Scenario 6 passes; the NFR-4/5 behaviors are verified functionally (cursor pagination, bounded output) and the NFR-6/7 durability and concurrency checks pass; the edge-case table has tests.
 
 ### M8 — Release (S)
 

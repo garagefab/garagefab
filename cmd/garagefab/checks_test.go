@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,24 @@ import (
 
 	"github.com/garagefab/garagefab/internal/store"
 )
+
+// TestCheckPortAvailable_PortInUse verifies that a bound port is reported as unavailable while
+// a free port passes (spec §8: port in use).
+func TestCheckPortAvailable_PortInUse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	addr := ln.Addr().String()
+	defer ln.Close()
+
+	if err := checkPortAvailable(addr); err == nil {
+		t.Fatalf("expected checkPortAvailable(%s) to fail while the port is bound", addr)
+	}
+	if err := checkPortAvailable("127.0.0.1:0"); err != nil {
+		t.Fatalf("expected a free port to pass, got %v", err)
+	}
+}
 
 // TestParseGitVersion verifies that validateGitVersionOutput correctly parses
 // git version strings and enforces the minimum version requirement (git 2.30.0+).

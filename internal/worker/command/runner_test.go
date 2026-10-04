@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/garagefab/garagefab/internal/worker/command"
+	"github.com/garagefab/garagefab/internal/worker/logbuf"
 )
 
 // TestCommandRunner_Run_And_Log_LOG2 tests requirements:
@@ -236,5 +237,55 @@ func TestSecurity_GhTokensNotExposed_GHB4(t *testing.T) {
 		if strings.HasPrefix(upper, "GH_TOKEN=") || strings.HasPrefix(upper, "GITHUB_TOKEN=") {
 			t.Errorf("GHB-4 violation: found %s in child process environment", entry)
 		}
+	}
+}
+
+// TestCommandRunner_NotFound_ExitCode127 verifies that a missing command yields the shell's
+// 127 exit code, which the failure categorizer classifies as Blocked (spec §8).
+func TestCommandRunner_NotFound_ExitCode127(t *testing.T) {
+	dir := t.TempDir()
+	runner := command.NewRunner()
+	res, err := runner.Run(context.Background(), command.RunOptions{
+		WorkDir: dir,
+		Command: "definitely-not-a-real-command-xyz",
+	})
+	if err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+	if res.ExitCode != 127 {
+		t.Fatalf("expected exit code 127 for a missing command, got %d (stderr=%q)", res.ExitCode, res.Stderr)
+	}
+}
+
+// TestCommandOutput_BoundedMemory_NFR5 verifies that a large command stream keeps the in-memory
+// result bounded to a tail while the full output is still written to the log file (NFR-5).
+func TestCommandOutput_BoundedMemory_NFR5(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "big.log")
+
+	runner := command.NewRunner()
+	res, err := runner.Run(context.Background(), command.RunOptions{
+		WorkDir: dir,
+		Command: "i=0; while [ $i -lt 20000 ]; do echo 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; i=$((i+1)); done; echo FINAL_LINE",
+		LogPath: logPath,
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if len(res.Stdout) > logbuf.DefaultMaxBytes+256 {
+		t.Fatalf("in-memory stdout not bounded: %d bytes", len(res.Stdout))
+	}
+	// The most recent lines (including the final line) must be preserved.
+	if !strings.Contains(res.Stdout, "FINAL_LINE") {
+		t.Fatalf("expected the tail to include the final line")
+	}
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat log failed: %v", err)
+	}
+	if info.Size() < 1_000_000 {
+		t.Fatalf("expected the full ~2MB output in the log file, got %d bytes", info.Size())
 	}
 }

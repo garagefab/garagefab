@@ -80,6 +80,10 @@ func (m *MockGuardrailRunner) CheckProtectedPaths(ctx context.Context, workDir, 
 	return m.violations, nil
 }
 
+func (m *MockGuardrailRunner) CheckProbeScope(ctx context.Context, workDir, stepStartSHA string, testPatterns []string, artifactGlob string) ([]factory.GuardrailViolation, error) {
+	return m.violations, nil
+}
+
 // MockProjectConfigProvider implements factory.ProjectConfigProvider.
 type MockProjectConfigProvider struct {
 	cfg *factory.ProjectConfig
@@ -375,6 +379,13 @@ type dynamicGuardrailRunner struct {
 }
 
 func (d *dynamicGuardrailRunner) CheckProtectedPaths(ctx context.Context, workDir, stepStartSHA string, patterns []string) ([]factory.GuardrailViolation, error) {
+	if d.checkFn != nil {
+		return d.checkFn(), nil
+	}
+	return nil, nil
+}
+
+func (d *dynamicGuardrailRunner) CheckProbeScope(ctx context.Context, workDir, stepStartSHA string, testPatterns []string, artifactGlob string) ([]factory.GuardrailViolation, error) {
 	if d.checkFn != nil {
 		return d.checkFn(), nil
 	}

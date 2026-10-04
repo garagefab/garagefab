@@ -237,6 +237,22 @@ func (a *factoryGuardrailAdapter) CheckProtectedPaths(ctx context.Context, workD
 	return res, nil
 }
 
+// CheckProbeScope restricts a failing-probe step to the configured test paths (GRD-5).
+func (a *factoryGuardrailAdapter) CheckProbeScope(ctx context.Context, workDir, stepStartSHA string, testPatterns []string, artifactGlob string) ([]factory.GuardrailViolation, error) {
+	violations, err := command.CheckProbeScope(ctx, workDir, stepStartSHA, testPatterns, artifactGlob)
+	if err != nil {
+		return nil, err
+	}
+	var res []factory.GuardrailViolation
+	for _, v := range violations {
+		res = append(res, factory.GuardrailViolation{
+			Path:   v.Path,
+			Status: v.Status,
+		})
+	}
+	return res, nil
+}
+
 // ------------------------------------------------------------------------------
 // Project Config Provider Adapter
 // ------------------------------------------------------------------------------
@@ -284,6 +300,7 @@ func (a *factoryProjectConfigAdapter) GetProjectConfig(ctx context.Context, repo
 		},
 		Guardrails: factory.ProjectGuardrails{
 			ProtectedPaths: yamlCfg.Guardrails.ProtectedPaths,
+			TestPaths:      yamlCfg.Guardrails.TestPaths,
 			Commands:       yamlCfg.Guardrails.Commands,
 		},
 		MaxConcurrentJobs: yamlCfg.MaxConcurrentJobs,

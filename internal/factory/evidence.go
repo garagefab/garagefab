@@ -33,6 +33,12 @@ type DiffStat struct {
 	Deletions    int `json:"deletions"`
 }
 
+// ProbeEvidence summarizes the failing-probe verification for bug fixes (PRB-5).
+type ProbeEvidence struct {
+	Status  string `json:"status"` // "pass" | "fail" | "skipped"
+	LogPath string `json:"log_path,omitempty"`
+}
+
 // EvidenceSummary represents the structured evidence presented at the human gate (APR-1).
 type EvidenceSummary struct {
 	JobID          int64             `json:"job_id"`
@@ -40,6 +46,7 @@ type EvidenceSummary struct {
 	BuildStatus    string            `json:"build_status"`    // "pass" | "fail" | "skipped"
 	TestStatus     string            `json:"test_status"`     // "pass" | "fail" | "skipped"
 	LintStatus     string            `json:"lint_status"`     // "pass" | "fail" | "skipped"
+	Probe          ProbeEvidence     `json:"probe"`           // bug_fix probe verification (PRB-5)
 	ReviewDecision string            `json:"review_decision"` // "approve" | "request_changes"
 	RiskScores     map[string]int    `json:"risk_scores"`
 	WarningsCount  int               `json:"warnings_count"`
@@ -58,6 +65,7 @@ func BuildEvidence(job *Job, steps []*StepRun, review *ReviewReport, diff *DiffS
 		BuildStatus:    "skipped",
 		TestStatus:     "skipped",
 		LintStatus:     "skipped",
+		Probe:          ProbeEvidence{Status: "skipped"},
 		ReviewDecision: "unknown",
 		RiskScores:     make(map[string]int),
 		DrillDowns:     make(map[string]string),
@@ -65,6 +73,10 @@ func BuildEvidence(job *Job, steps []*StepRun, review *ReviewReport, diff *DiffS
 
 	// 1. Inspect step runs for command outcomes
 	for _, s := range steps {
+		// The probe command is tracked separately (PRB-5); do not fold it into build/test/lint.
+		if s.Kind == StepKindCommand && s.Executor == "probe" {
+			continue
+		}
 		// Identify command step status
 		switch s.Stage {
 		case StageCoding:
@@ -96,11 +108,22 @@ func BuildEvidence(job *Job, steps []*StepRun, review *ReviewReport, diff *DiffS
 		}
 	}
 
-	// If commands passed during coding, ensure build & test default to pass
-	if summary.BuildStatus == "skipped" && summary.TestStatus == "skipped" {
-		summary.BuildStatus = "pass"
-		summary.TestStatus = "pass"
-		summary.LintStatus = "pass"
+	// 1b. Probe verification (PRB-5): the latest probe command step run wins.
+	var probeStep *StepRun
+	for _, s := range steps {
+		if s.Kind == StepKindCommand && s.Executor == "probe" {
+			if probeStep == nil || s.ID > probeStep.ID {
+				probeStep = s
+			}
+		}
+	}
+	if probeStep != nil {
+		if probeStep.Status == StepStatusSuccess {
+			summary.Probe.Status = "pass"
+		} else {
+			summary.Probe.Status = "fail"
+		}
+		summary.Probe.LogPath = probeStep.LogPath
 	}
 
 	// 2. Synthesize Review metrics
@@ -123,6 +146,7 @@ func BuildEvidence(job *Job, steps []*StepRun, review *ReviewReport, diff *DiffS
 	summary.DrillDowns["diff"] = fmt.Sprintf("/api/jobs/%d/diff", job.ID)
 	summary.DrillDowns["spec"] = fmt.Sprintf("/api/jobs/%d/artifacts/spec", job.ID)
 	summary.DrillDowns["review"] = fmt.Sprintf("/api/jobs/%d/artifacts/review", job.ID)
+	summary.DrillDowns["probe"] = fmt.Sprintf("/api/jobs/%d/artifacts/probe", job.ID)
 	summary.DrillDowns["evidence"] = fmt.Sprintf("/api/jobs/%d/artifacts/evidence", job.ID)
 
 	// 5. Generate Markdown content for evidence.md (APR-4)
@@ -133,7 +157,20 @@ func BuildEvidence(job *Job, steps []*StepRun, review *ReviewReport, diff *DiffS
 	sb.WriteString("## Command Results\n")
 	fmt.Fprintf(&sb, "- **Build:** %s\n", summary.BuildStatus)
 	fmt.Fprintf(&sb, "- **Tests:** %s\n", summary.TestStatus)
-	fmt.Fprintf(&sb, "- **Lint:** %s\n\n", summary.LintStatus)
+	fmt.Fprintf(&sb, "- **Lint:** %s\n", summary.LintStatus)
+	if summary.BuildStatus == "skipped" && summary.TestStatus == "skipped" && summary.LintStatus == "skipped" {
+		sb.WriteString("- _Verification commands were not run (none configured, or the docs profile runs only guardrails)._\n")
+	}
+	sb.WriteString("\n")
+
+	if summary.Probe.Status != "skipped" {
+		sb.WriteString("## Failing Probe\n")
+		fmt.Fprintf(&sb, "- **Result:** %s\n", summary.Probe.Status)
+		if summary.Probe.LogPath != "" {
+			fmt.Fprintf(&sb, "- **Log:** `%s`\n", summary.Probe.LogPath)
+		}
+		sb.WriteString("\n")
+	}
 
 	sb.WriteString("## Independent Review\n")
 	fmt.Fprintf(&sb, "- **Decision:** `%s`\n", summary.ReviewDecision)

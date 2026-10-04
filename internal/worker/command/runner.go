@@ -35,7 +35,6 @@ package command
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -46,7 +45,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/garagefab/garagefab/internal/worker/logbuf"
 )
+
+// openLogFile opens the streaming log file. It is a package variable so tests can inject a
+// write/open failure (e.g. disk full) at the log-writer boundary (spec §8).
+var openLogFile = os.OpenFile
 
 // ProcessStartFunc is called right after process startup to persist process records (RCV-1).
 type ProcessStartFunc func(pid, pgid int, startTime int64)
@@ -212,7 +217,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		if err := os.MkdirAll(filepath.Dir(opts.LogPath), 0700); err != nil {
 			return nil, fmt.Errorf("command: create log dir: %w", err)
 		}
-		f, err := os.OpenFile(opts.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		f, err := openLogFile(opts.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
 			return nil, fmt.Errorf("command: open log file: %w", err)
 		}
@@ -238,17 +243,18 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		opts.OnProcessStart(pid, pgid, startTime.Unix())
 	}
 
-	// Buffers and synchronization primitives for concurrent stream capture
+	// Bounded in-memory buffers (NFR-5): only the most recent 64 KiB per stream is retained.
+	// The full output still goes to the log file; memory does not grow with output size.
 	var (
-		stdoutBuf bytes.Buffer
-		stderrBuf bytes.Buffer
-		combBuf   bytes.Buffer
-		mu        sync.Mutex     // Mutex protects logFile and combBuf from concurrent writes
-		wg        sync.WaitGroup // WaitGroup ensures both readers finish before cmd.Wait()
+		stdoutTail = logbuf.NewTailBuffer(logbuf.DefaultMaxBytes)
+		stderrTail = logbuf.NewTailBuffer(logbuf.DefaultMaxBytes)
+		combTail   = logbuf.NewTailBuffer(logbuf.DefaultMaxBytes)
+		mu         sync.Mutex     // Mutex protects logFile and the combined tail from concurrent writes
+		wg         sync.WaitGroup // WaitGroup ensures both readers finish before cmd.Wait()
 	)
 
-	// streamOutput reads lines from a pipe, timestamps them, and appends to buffers and disk
-	streamOutput := func(reader io.Reader, streamName string, buf *bytes.Buffer) {
+	// streamOutput reads lines from a pipe, timestamps them, and appends to bounded tails and disk
+	streamOutput := func(reader io.Reader, streamName string, tail *logbuf.TailBuffer) {
 		defer wg.Done()
 		scanner := bufio.NewScanner(reader)
 		// Expand scanner buffer up to 2MB (default is 64KB) to prevent truncation on large output lines
@@ -261,8 +267,8 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			logLine := fmt.Sprintf("[%s] [%s] %s\n", nowStr, streamName, text)
 
 			mu.Lock()
-			buf.WriteString(text + "\n")
-			combBuf.WriteString(text + "\n")
+			tail.WriteLine(text)
+			combTail.WriteLine(text)
 			if logFile != nil {
 				_, _ = logFile.WriteString(logLine)
 			}
@@ -272,8 +278,8 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	// Spawn two background goroutines to drain stdout and stderr pipes concurrently
 	wg.Add(2)
-	go streamOutput(stdoutPipe, "stdout", &stdoutBuf)
-	go streamOutput(stderrPipe, "stderr", &stderrBuf)
+	go streamOutput(stdoutPipe, "stdout", stdoutTail)
+	go streamOutput(stderrPipe, "stderr", stderrTail)
 
 	// Wait for pipe readers to reach EOF
 	wg.Wait()
@@ -295,9 +301,9 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	return &RunResult{
 		ExitCode: exitCode,
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-		Combined: combBuf.String(),
+		Stdout:   stdoutTail.String(),
+		Stderr:   stderrTail.String(),
+		Combined: combTail.String(),
 		Duration: duration,
 	}, nil
 }

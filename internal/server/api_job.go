@@ -65,6 +65,12 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 			filter.Limit = limit
 		}
 	}
+	// Cursor pagination (NFR-4): return jobs with id < cursor.
+	if cursorStr := r.URL.Query().Get("cursor"); cursorStr != "" {
+		if cursor, err := strconv.ParseInt(cursorStr, 10, 64); err == nil {
+			filter.Cursor = cursor
+		}
+	}
 
 	jobs, err := s.DB.Jobs().ListJobs(r.Context(), filter)
 	if err != nil {
@@ -73,6 +79,16 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	if jobs == nil {
 		jobs = []*store.Job{}
+	}
+
+	// Expose the next page cursor via a response header so the existing array body stays
+	// backward-compatible with the dashboard (NFR-4).
+	effectiveLimit := filter.Limit
+	if effectiveLimit <= 0 {
+		effectiveLimit = 50
+	}
+	if len(jobs) == effectiveLimit {
+		w.Header().Set("X-Next-Cursor", strconv.FormatInt(jobs[len(jobs)-1].ID, 10))
 	}
 
 	w.Header().Set("Content-Type", "application/json")

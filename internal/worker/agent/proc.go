@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"github.com/garagefab/garagefab/internal/worker/command"
+	"github.com/garagefab/garagefab/internal/worker/logbuf"
 )
 
 // defaultGracePeriod is the maximum time granted to a process group after SIGTERM before SIGKILL (COD-10).
@@ -59,7 +60,7 @@ const defaultGracePeriod = 10 * time.Second
 const maxPromptArgBytes = 64 * 1024
 
 // maxTailBufferBytes is the maximum size of the in-memory output buffer kept for error reporting (64 KiB).
-const maxTailBufferBytes = 64 * 1024
+const maxTailBufferBytes = logbuf.DefaultMaxBytes
 
 // procSpec defines the configuration required to execute an external agent subprocess.
 type procSpec struct {
@@ -81,44 +82,6 @@ type procResult struct {
 	TimedOut  bool          // True if the process group was killed due to timeout expiration
 	Cancelled bool          // True if the parent context was cancelled
 	Duration  time.Duration // Wall-clock execution time
-}
-
-// tailBuffer maintains a thread-safe, bounded FIFO memory buffer of recent output lines.
-type tailBuffer struct {
-	mu   sync.Mutex
-	data []byte
-	max  int
-}
-
-// newTailBuffer initializes a bounded tail buffer with the specified capacity limit.
-func newTailBuffer(max int) *tailBuffer {
-	return &tailBuffer{max: max}
-}
-
-// WriteLine appends a line to the tail buffer, evicting the oldest bytes when exceeding capacity.
-func (t *tailBuffer) WriteLine(line string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	b := []byte(line + "\n")
-	if len(b) >= t.max {
-		t.data = append([]byte(nil), b[len(b)-t.max:]...)
-		return
-	}
-	t.data = append(t.data, b...)
-	if len(t.data) > t.max {
-		overflow := len(t.data) - t.max
-		newData := make([]byte, t.max)
-		copy(newData, t.data[overflow:])
-		t.data = newData
-	}
-}
-
-// String returns the contents of the tail buffer as a string.
-func (t *tailBuffer) String() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return string(t.data)
 }
 
 // deliverPrompt ensures prompt arguments do not exceed OS argument length limits (F9).
@@ -273,7 +236,7 @@ func runProc(ctx context.Context, p procSpec) (procResult, error) {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
-		tailBuf = newTailBuffer(maxTailBufferBytes)
+		tailBuf = logbuf.NewTailBuffer(maxTailBufferBytes)
 	)
 
 	streamOutput := func(reader io.Reader, streamName string) {

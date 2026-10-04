@@ -40,6 +40,9 @@ type FakeRunner struct {
 	FailReview             bool          // If true, produces a "request_changes" review decision
 	ReviewDecision         string        // Overrides default review decision ("approve" vs "request_changes")
 	SpecBehavior           string        // "spec" (default), "questions", "both", "neither", "invalid" (SPC-1, SPC-2)
+	ProbeBehavior          string        // "fails" (default), "passes", "invalid" for stage 03 (PRB-1..4)
+	ProbeCommand           string        // Overrides the command written to probe.json
+	ProbeFiles             []string      // Overrides the files list written to probe.json
 	CustomSpecContent      string        // Overrides default valid spec content
 	CustomQuestionsContent string        // Overrides default clarification questions content
 	CustomExitCode         int           // Simulates arbitrary non-zero process exit codes
@@ -157,6 +160,41 @@ Assumes standard execution environment.
 			_ = os.WriteFile(filepath.Join(artifactDir, "spec.md"), []byte(specContent), 0644)
 			return &AgentResult{ExitCode: 0, Summary: "Fake agent output valid spec"}, nil
 		}
+
+	case "03_Failing_Probe":
+		// Emit a probe.json artifact describing a repro test command (PRB-1..4).
+		behavior := f.ProbeBehavior
+		if behavior == "" {
+			behavior = "fails"
+		}
+		files := f.ProbeFiles
+		if len(files) == 0 {
+			files = []string{"bug_repro_test.go"}
+		}
+
+		artifactDir := filepath.Join(req.WorktreePath, ".garagefab", "jobs", fmt.Sprintf("%d", req.JobID))
+		_ = os.MkdirAll(artifactDir, 0700)
+
+		if behavior == "invalid" {
+			// Missing/empty fields violate the §6.3 contract (PRB-1).
+			_ = os.WriteFile(filepath.Join(artifactDir, "probe.json"), []byte(`{"schema_version":1,"command":"","files":[]}`), 0644)
+			return &AgentResult{ExitCode: 0, Summary: "Fake agent output invalid probe.json"}, nil
+		}
+
+		command := f.ProbeCommand
+		if command == "" {
+			if behavior == "passes" {
+				command = "true"
+			} else {
+				command = "false"
+			}
+		}
+		probeJSON := fmt.Sprintf(`{"schema_version":1,"command":%q,"files":%q,"description":"Fake probe (%s)"}`, command, files, behavior)
+		_ = os.WriteFile(filepath.Join(artifactDir, "probe.json"), []byte(probeJSON), 0644)
+		if req.WorktreePath != "" {
+			_ = os.WriteFile(filepath.Join(req.WorktreePath, files[0]), []byte("package main\n// fake probe repro\n"), 0644)
+		}
+		return &AgentResult{ExitCode: 0, Summary: fmt.Sprintf("Fake agent output %s probe", behavior)}, nil
 
 	case "04_Coding":
 		if f.FailCoding {

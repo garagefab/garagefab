@@ -35,6 +35,7 @@ package intake
 import (
 	"context"
 	"log/slog"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -127,6 +128,13 @@ func (p *Poller) PollOnce(ctx context.Context) {
 
 // pollProject executes intent file scanning, issue polling, and feedback reconciliation for a project.
 func (p *Poller) pollProject(ctx context.Context, project *store.Project) {
+	// spec §8: a moved or deleted project path is skipped. Its jobs fail Blocked at their next
+	// step (worktree creation), which surfaces them in "attention".
+	if _, err := os.Stat(project.RepoPath); err != nil {
+		slog.Warn("intake: project path unavailable, skipping", "project", project.Name, "path", project.RepoPath, "error", err)
+		return
+	}
+
 	cfg, err := config.LoadProjectConfig(project.RepoPath)
 	if err != nil {
 		slog.Warn("intake: load project config failed", "project", project.Name, "error", err)

@@ -111,6 +111,7 @@ func (r *OverviewRepo) GetOverviewData(ctx context.Context) (*OverviewData, erro
 		JOIN projects p ON j.project_id = p.id
 		WHERE p.is_archived = 0 AND j.status IN ('needs_clarification', 'spec_review', 'awaiting_approval', 'failed', 'interrupted')
 		ORDER BY j.updated_at DESC
+		LIMIT 50
 	`
 	attRows, err := r.q.QueryContext(ctx, attentionQuery)
 	if err != nil {
@@ -163,6 +164,7 @@ func (r *OverviewRepo) GetOverviewData(ctx context.Context) (*OverviewData, erro
 		SELECT message
 		FROM intake_errors
 		ORDER BY updated_at DESC
+		LIMIT 50
 	`
 	errRows, err := r.q.QueryContext(ctx, errQuery)
 	if err != nil {

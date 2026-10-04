@@ -64,6 +64,43 @@ max_concurrent_jobs: 2
 	}
 }
 
+// TestLoadProjectConfig_TestPaths_GRD5 verifies that guardrails.test_paths is parsed and that
+// it defaults to empty (no restriction) when omitted (GRD-5).
+func TestLoadProjectConfig_TestPaths_GRD5(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// 1. Omitted test_paths -> empty (no restriction).
+	cfg, err := config.LoadProjectConfig(tempDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Guardrails.TestPaths) != 0 {
+		t.Errorf("expected empty default test_paths, got %v", cfg.Guardrails.TestPaths)
+	}
+
+	// 2. Explicit test_paths parsed.
+	garagefabDir := filepath.Join(tempDir, ".garagefab")
+	if err := os.MkdirAll(garagefabDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	yamlContent := `
+guardrails:
+  protected_paths: ["**/*_test.go"]
+  test_paths: ["**/*_test.go", "testdata/**"]
+  commands: ["git status"]
+`
+	if err := os.WriteFile(filepath.Join(garagefabDir, "project.yaml"), []byte(yamlContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.LoadProjectConfig(tempDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Guardrails.TestPaths) != 2 || cfg.Guardrails.TestPaths[1] != "testdata/**" {
+		t.Errorf("unexpected test_paths: %v", cfg.Guardrails.TestPaths)
+	}
+}
+
 func TestLoadProjectConfig_Agents_Validation(t *testing.T) {
 	tempDir := t.TempDir()
 	garagefabDir := filepath.Join(tempDir, ".garagefab")
