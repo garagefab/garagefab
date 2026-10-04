@@ -11,6 +11,10 @@
 package command_test
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/garagefab/garagefab/internal/worker/command"
@@ -35,5 +39,41 @@ func TestMasking_GhTokens_LOG6(t *testing.T) {
 	cleanInput := "Normal compilation output without tokens"
 	if command.MaskTokens(cleanInput) != cleanInput {
 		t.Errorf("expected clean input to remain unchanged, got %q", command.MaskTokens(cleanInput))
+	}
+}
+
+// TestMasking_StoredCommandLog_LOG6 verifies that GH_TOKEN/GITHUB_TOKEN are masked both in the
+// returned command result and in the stored log file (LOG-6).
+func TestMasking_StoredCommandLog_LOG6(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_secretToken12345")
+	t.Setenv("GITHUB_TOKEN", "ghs_anotherSecretToken67890")
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "step.log")
+	runner := command.NewRunner()
+	res, err := runner.Run(context.Background(), command.RunOptions{
+		WorkDir: dir,
+		Command: "echo 'using ghp_secretToken12345 and ghs_anotherSecretToken67890'",
+		LogPath: logPath,
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if strings.Contains(res.Stdout, "ghp_secretToken12345") || strings.Contains(res.Stdout, "ghs_anotherSecretToken67890") {
+		t.Fatalf("token leaked into command output: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "***") {
+		t.Fatalf("expected masked output, got: %q", res.Stdout)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log failed: %v", err)
+	}
+	if strings.Contains(string(logData), "ghp_secretToken12345") || strings.Contains(string(logData), "ghs_anotherSecretToken67890") {
+		t.Fatalf("token leaked into stored log: %q", string(logData))
+	}
+	if !strings.Contains(string(logData), "***") {
+		t.Fatalf("expected masked stored log, got: %q", string(logData))
 	}
 }

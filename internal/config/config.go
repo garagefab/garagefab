@@ -134,19 +134,15 @@ func Load(dataDir string) (*Config, error) {
 	fileInfo, err := os.Stat(configFile)
 	if os.IsNotExist(err) {
 		// Generate cryptographically secure random 32-byte (256-bit) API token (CLI-6)
-		tokenBytes := make([]byte, 32)
-		if _, err := rand.Read(tokenBytes); err != nil {
-			return nil, fmt.Errorf("config: generate api token: %w", err)
+		token, gErr := GenerateAPIToken()
+		if gErr != nil {
+			return nil, gErr
 		}
-		cfg.Server.APIToken = hex.EncodeToString(tokenBytes)
+		cfg.Server.APIToken = token
 
 		// Serialize to YAML and persist to disk with mode 0600 (rw-------)
-		data, err := yaml.Marshal(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("config: marshal new config: %w", err)
-		}
-		if err := os.WriteFile(configFile, data, 0600); err != nil {
-			return nil, fmt.Errorf("config: write new config %s: %w", configFile, err)
+		if err := Save(dataDir, cfg); err != nil {
+			return nil, err
 		}
 	} else if err != nil {
 		return nil, fmt.Errorf("config: stat config file %s: %w", configFile, err)
@@ -172,6 +168,52 @@ func Load(dataDir string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// GenerateAPIToken returns a fresh cryptographically secure 256-bit API token as hex (CLI-6, CLI-8).
+func GenerateAPIToken() (string, error) {
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", fmt.Errorf("config: generate api token: %w", err)
+	}
+	return hex.EncodeToString(tokenBytes), nil
+}
+
+// Save writes cfg to <dataDir>/config.yaml with mode 0600 (CLI-8). The write is atomic: a
+// temporary file in the same directory is renamed into place, so a crash cannot leave a
+// partially written config.
+func Save(dataDir string, cfg *Config) error {
+	if dataDir == "" {
+		return fmt.Errorf("config: save: data directory must not be empty")
+	}
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return fmt.Errorf("config: create data dir %s: %w", dataDir, err)
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("config: marshal config: %w", err)
+	}
+
+	configFile := filepath.Join(dataDir, "config.yaml")
+	tmp, err := os.CreateTemp(dataDir, "config.yaml.tmp-*")
+	if err != nil {
+		return fmt.Errorf("config: create temp config: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("config: write temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("config: close temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, configFile); err != nil {
+		return fmt.Errorf("config: install config %s: %w", configFile, err)
+	}
+	return nil
 }
 
 // validate ensures mandatory settings are valid and safe before booting the server.
