@@ -18,7 +18,8 @@ Download the archive for your OS and architecture from
 # macOS / Linux (replace <os> and <arch>: darwin|linux and amd64|arm64)
 curl -LO https://github.com/garagefab/garagefab/releases/download/v0.1.0/garagefab_0.1.0_<os>_<arch>.tar.gz
 curl -LO https://github.com/garagefab/garagefab/releases/download/v0.1.0/checksums.txt
-shasum -a 256 -c checksums.txt        # or: sha256sum -c checksums.txt
+grep "garagefab_0.1.0_<os>_<arch>.tar.gz" checksums.txt | shasum -a 256 -c -   # macOS
+grep "garagefab_0.1.0_<os>_<arch>.tar.gz" checksums.txt | sha256sum -c -       # Linux
 tar -xzf garagefab_0.1.0_<os>_<arch>.tar.gz
 sudo mv garagefab /usr/local/bin/     # or ~/.local/bin/, ensuring it is on PATH
 garagefab version
@@ -112,6 +113,7 @@ mkdir -p ~/.config/systemd/user
 cp examples/systemd/garagefab.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now garagefab.service
+sudo loginctl enable-linger $USER     # keep running after you log out
 
 # System-level unit (headless; edit User= first, needs root):
 sudo cp examples/systemd/garagefab.system.service /etc/systemd/system/garagefab.service

@@ -37,10 +37,15 @@
     <key>KeepAlive</key>
     <true/>
 
-    <!-- Where launchd captures stdout/stderr; adjust the paths as you prefer. -->
+    <!--
+      Where launchd captures stdout/stderr. The startup banner includes the
+      dashboard login URL (with the API token), so use the user's private
+      ~/Library/Logs rather than a world-readable /tmp file. Replace
+      YOUR_USERNAME with your account name.
+    -->
     <key>StandardOutPath</key>
-    <string>/tmp/garagefab.out.log</string>
+    <string>/Users/YOUR_USERNAME/Library/Logs/garagefab.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/garagefab.err.log</string>
+    <string>/Users/YOUR_USERNAME/Library/Logs/garagefab.err.log</string>
 </dict>
 </plist>

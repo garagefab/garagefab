@@ -21,7 +21,7 @@ filled-in copy attached to the release's closing issue.
 1. **Download and verify.** Download the release archive for the machine's OS/arch from the GitHub
    Release. Verify it against `checksums.txt`:
    ```sh
-   sha256sum -c checksums.txt   # or: shasum -a 256 -c checksums.txt
+   grep "garagefab_<version>_<os>_<arch>.tar.gz" checksums.txt | shasum -a 256 -c -   # or: sha256sum -c -
    tar -xzf garagefab_<version>_<os>_<arch>.tar.gz
    ./garagefab version
    ```

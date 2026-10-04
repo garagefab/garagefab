@@ -13,6 +13,10 @@
 # Logs:
 #   journalctl --user -u garagefab -f
 #
+# To keep the service running after you log out (for example, on a headless
+# box), enable lingering for your account:
+#   sudo loginctl enable-linger $USER
+#
 # %h expands to the user's home directory, so the default data directory
 # (~/.garagefab) and installed binary under ~/.local/bin are resolved per user.
 # Adjust ExecStart if you installed the binary elsewhere (for example
@@ -20,8 +24,6 @@
 
 [Unit]
 Description=Garagefab software factory
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple

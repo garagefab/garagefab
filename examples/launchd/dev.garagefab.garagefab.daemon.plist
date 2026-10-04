@@ -23,7 +23,9 @@
     <key>Label</key>
     <string>dev.garagefab.garagefab.daemon</string>
 
-    <!-- Replace "YOUR_USERNAME" with the account that should own the process. -->
+    <!-- Replace "YOUR_USERNAME" (both here and in --data-dir below) with the
+         account that should own the process. Passing --data-dir explicitly
+         avoids relying on launchd's HOME, which is not guaranteed for daemons. -->
     <key>UserName</key>
     <string>YOUR_USERNAME</string>
 
@@ -32,6 +34,8 @@
         <string>/usr/local/bin/garagefab</string>
         <string>start</string>
         <string>--no-open</string>
+        <string>--data-dir</string>
+        <string>/Users/YOUR_USERNAME/.garagefab</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -40,9 +44,12 @@
     <key>KeepAlive</key>
     <true/>
 
+    <!-- The startup banner contains the dashboard login URL (with the API
+         token), so log to the user's private ~/Library/Logs, not world-readable
+         /tmp. -->
     <key>StandardOutPath</key>
-    <string>/tmp/garagefab.out.log</string>
+    <string>/Users/YOUR_USERNAME/Library/Logs/garagefab.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/garagefab.err.log</string>
+    <string>/Users/YOUR_USERNAME/Library/Logs/garagefab.err.log</string>
 </dict>
 </plist>

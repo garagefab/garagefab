@@ -55,7 +55,7 @@
 | M5 | Completed |
 | M6 | Completed |
 | M7 | Completed (branch `m7-remaining-profiles-and-hardening`) |
-| M8 | Completed (branch `m8-release`) |
+| M8 | In progress (branch `m8-release`) |
 
 ## 4. Milestones
 
