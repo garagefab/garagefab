@@ -16,8 +16,38 @@ permissions:
   contents: write
 
 jobs:
+  # Gate the release on a green test run so a tag cannot publish an untested
+  # build. Mirrors the build-and-test essentials of ci.yml on a single runner.
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build UI
+        run: make ui
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
   goreleaser:
     name: GoReleaser
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

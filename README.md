@@ -34,7 +34,7 @@ See [Building](#building) below.
 **Runtime** — the only things needed to *run* Garagefab:
 
 - **Git:** 2.30+
-- The coding agent CLI(s) you configure for your projects ([`agy`](https://github.com/) or
+- The coding agent CLI(s) you configure for your projects (`agy` or
   `opencode`).
 - **GitHub CLI (`gh`):** 2.x, authenticated — only for projects that set `github.repo`.
 
@@ -81,6 +81,10 @@ make ci
 # Print and open a fresh dashboard login URL for a running service
 ./bin/garagefab open
 ```
+
+A `--port N` override is **persisted** to `~/.garagefab/config.yaml`, so `garagefab open` and the
+`garagefab-work` skill use the port the server actually binds. To switch back, run
+`garagefab start --port 7878`.
 
 ### Keeping it running
 

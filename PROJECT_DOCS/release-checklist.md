@@ -77,21 +77,20 @@ Record the outcome per machine. `PASS`/`FAIL` plus any notes (errors, timings, v
 |------|---------------|---------------|
 | Release tag / version | `v0.1.0` / prints `0.1.0` | not run |
 | Checksum verified | PASS | not run |
-| `garagefab version` matches tag | PASS (`0.1.0`; see note) | not run |
+| `garagefab version` matches tag | PASS (`0.1.0` for tag `v0.1.0`) | not run |
 | Service starts; dashboard reachable | PASS (port 7878) | not run |
 | Project registered | PASS (`garagefab-release-check`) | not run |
 | Scenario 1 → PR + `done` + `garagefab:delivered` | PASS (job 1, PR #2) | not run |
 | Scenario 2 → clarification round-trip → spec | PASS (job 2, PR #4) | not run |
 | Browser smoke (Chrome, Firefox, Safari) | NOT RUN | not run |
 
-**Agent versions tested:** `agy` 1.2.16 (the binary warns the tested baseline is 1.2.14, `R3`);
-`opencode` not exercised.
+**Agent versions tested:** `agy` 1.2.16 (recorded baseline, `R3`); `opencode` not exercised.
 
 **Release sign-off:** 2026-10-04, macOS 15 (darwin/arm64), fresh `--data-dir`, by the maintainer.
 
 **Notes from the run:**
-- The version prints `0.1.0` while the tag is `v0.1.0` (GoReleaser strips the `v`); the checklist
-  item is satisfied modulo the prefix.
+- Version convention: the binary prints `0.1.0` for tag `v0.1.0`; the leading `v` is stripped in both
+  the GoReleaser build and `make build` (aligned in M8 polish).
 - The skill needs `GARAGEFAB_HOME` when the daemon is started with a non-default `--data-dir`,
   otherwise it reads the default `~/.garagefab/config.yaml`.
 - Finding (out of M8 scope): `garagefab start --port N` overrides the runtime port but does not

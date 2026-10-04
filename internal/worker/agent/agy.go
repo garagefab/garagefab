@@ -38,7 +38,7 @@ import (
 )
 
 // TestedAgyVersion is the verified and supported version of the agy CLI (Spike A, R3).
-const TestedAgyVersion = "1.2.14"
+const TestedAgyVersion = "1.2.16"
 
 // AgyRunner executes AI agent tasks via the Google Antigravity `agy` CLI tool (D21).
 type AgyRunner struct {

@@ -56,3 +56,11 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^Merge "
+
+# Publish a GitHub Release for the pushed tag. Owner/name are inferred from the
+# git remote; `prerelease: auto` marks `-rc`/`-beta` tags as prereleases so the
+# verified `v0.1.0` stays the "latest" release.
+release:
+  draft: false
+  prerelease: auto
+  make_latest: true

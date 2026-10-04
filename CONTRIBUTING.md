@@ -24,7 +24,7 @@ make test       # Run Go tests
 make lint       # Run golangci-lint
 make vet        # Run go vet
 make ui         # Build the React UI only
-make ci         # lint + vet + test + build (the full CI pipeline)
+make ci         # build + lint + vet + test (the full CI pipeline)
 ```
 
 Run `make ci` before opening a pull request; it mirrors the CI workflow.

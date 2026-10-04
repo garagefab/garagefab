@@ -18,16 +18,16 @@
 #   sudo loginctl enable-linger $USER
 #
 # %h expands to the user's home directory, so the default data directory
-# (~/.garagefab) and installed binary under ~/.local/bin are resolved per user.
-# Adjust ExecStart if you installed the binary elsewhere (for example
-# /usr/local/bin/garagefab).
+# (~/.garagefab) is resolved per user. ExecStart uses /usr/local/bin to match the
+# README install step; change it to %h/.local/bin/garagefab if you installed the
+# binary per-user instead.
 
 [Unit]
 Description=Garagefab software factory
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/garagefab start --no-open
+ExecStart=/usr/local/bin/garagefab start --no-open
 Restart=on-failure
 RestartSec=5
 

@@ -74,7 +74,7 @@ for arg in "$@"; do
       PROMPT="${arg#--print=}"
       ;;
     --version)
-      echo "1.2.14"
+      echo "1.2.16"
       exit 0
       ;;
   esac

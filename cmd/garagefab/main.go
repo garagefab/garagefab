@@ -93,8 +93,16 @@ var startCmd = &cobra.Command{
 		}
 
 		// Allow CLI --port flag to override the port specified in config.yaml.
+		// Track whether it actually changed so we can persist it after the
+		// pre-flight checks, keeping config.yaml — which `garagefab open` and the
+		// garagefab-work skill read — in sync with the port the server binds (CLI-1).
+		listenOverride := false
 		if portFlag > 0 {
-			cfg.Server.Listen = fmt.Sprintf("127.0.0.1:%d", portFlag)
+			override := fmt.Sprintf("127.0.0.1:%d", portFlag)
+			if cfg.Server.Listen != override {
+				cfg.Server.Listen = override
+				listenOverride = true
+			}
 		}
 
 		// 2. Pre-flight startup checks (spec CLI-7). Fail-fast before acquiring locks or touching DB.
@@ -121,6 +129,16 @@ var startCmd = &cobra.Command{
 				slog.Error("failed to release lock", "error", err)
 			}
 		}()
+
+		// Persist a --port override only after the pre-flight checks and the
+		// single-instance lock succeed, so a failed start never writes a bad port.
+		// This makes the effective port "sticky": subsequent starts without
+		// --port use it until changed again (CLI-1).
+		if listenOverride {
+			if err := config.Save(cfg.DataDir, cfg); err != nil {
+				slog.Warn("failed to persist port override to config", "error", err)
+			}
+		}
 
 		// 4. Persistence Layer (SQLite + Goose migrations).
 		// Opens SQLite with WAL mode, single writer, and pooled readers.

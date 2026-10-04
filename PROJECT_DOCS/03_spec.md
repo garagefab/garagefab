@@ -298,7 +298,7 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 
 | ID | Pri | Requirement | Acceptance criteria |
 |----|-----|-------------|---------------------|
-| CLI-1 | M | `garagefab start [--port N] [--data-dir PATH] [--no-open]` runs the service in the **foreground**, prints the dashboard login URL, and opens the browser unless `--no-open` (OQ-6). | Given a first run, then the dashboard is reachable and the login URL is printed. |
+| CLI-1 | M | `garagefab start [--port N] [--data-dir PATH] [--no-open]` runs the service in the **foreground**, prints the dashboard login URL, and opens the browser unless `--no-open` (OQ-6). A `--port N` override is persisted to `config.yaml`, so `garagefab open` and the skill read the bound port. | Given a first run, then the dashboard is reachable and the login URL is printed. Given `start --port 7999`, then `config.yaml` records `listen: 127.0.0.1:7999`. |
 | CLI-2 | M | `garagefab open` prints and opens a fresh login URL for the running service. | Given a lost session, then `open` restores access. |
 | CLI-3 | M | `garagefab install-skills` (HND-3). | See HND-3. |
 | CLI-4 | M | `garagefab status` prints running jobs and attention items by reading the database. It works while the service runs. | Given a running job, then it is listed with stage and status. |

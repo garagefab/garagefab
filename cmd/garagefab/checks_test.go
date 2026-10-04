@@ -99,7 +99,7 @@ func TestCheckAgent_Preflight_R3(t *testing.T) {
 			name:                 "agy exact tested version match",
 			agentName:            "agy",
 			lookPathErr:          nil,
-			versionOutput:        "1.2.14\n",
+			versionOutput:        "1.2.16\n",
 			wantInstalled:        true,
 			wantVersionMismatch:  false,
 			wantWarningSubstring: "",
@@ -120,7 +120,7 @@ func TestCheckAgent_Preflight_R3(t *testing.T) {
 			versionOutput:        "1.3.0\n",
 			wantInstalled:        true,
 			wantVersionMismatch:  true,
-			wantWarningSubstring: "differs from tested version 1.2.14 (R3)",
+			wantWarningSubstring: "differs from tested version 1.2.16 (R3)",
 		},
 		{
 			name:                 "opencode version mismatch warning only (R3)",

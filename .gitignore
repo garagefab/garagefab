@@ -11,4 +11,4 @@ ui/node_modules/
 .vscode/
 PROJECT_DOCS/research/TURGAY/
 .commandcode/
-dist/
+/dist/

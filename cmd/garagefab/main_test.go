@@ -166,4 +166,15 @@ func TestCLI_Start_And_SecondInstance_RCV5_CLI1(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tempDir, "garagefab.db")); err != nil {
 		t.Errorf("expected garagefab.db to be created: %v", err)
 	}
+
+	// Verify the --port override is persisted to config.yaml (CLI-1), so readers
+	// such as `garagefab open` and the garagefab-work skill use the bound port.
+	cfgData, err := os.ReadFile(filepath.Join(tempDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	wantListen := fmt.Sprintf("listen: 127.0.0.1:%d", port)
+	if !strings.Contains(string(cfgData), wantListen) {
+		t.Errorf("expected config.yaml to persist %q, got:\n%s", wantListen, string(cfgData))
+	}
 }
