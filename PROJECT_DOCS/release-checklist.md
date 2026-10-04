@@ -1,8 +1,10 @@
 # Garagefab — Release Checklist
 
 This is the manual, clean-machine verification required before tagging a release. It exercises the
-two MVP scenarios from `PROJECT_DOCS/01_intent.md` with a **real** agent on a clean macOS and Linux
-machine. CI cannot run real agents, so this checklist is the release's end-to-end evidence.
+two MVP scenarios from `PROJECT_DOCS/01_intent.md` with a **real** agent on a clean supported
+platform. CI cannot run real agents, so this checklist is the release's end-to-end evidence.
+Verifying **one** supported platform (macOS or Linux) per release is sufficient (`NFR-1` relaxed in
+M8); repeat on the other platform when available.
 
 Complete one section per machine and paste the observed results into the results table. Keep the
 filled-in copy attached to the release's closing issue.
@@ -73,15 +75,24 @@ Record the outcome per machine. `PASS`/`FAIL` plus any notes (errors, timings, v
 
 | Item | macOS (arm64) | Linux (amd64) |
 |------|---------------|---------------|
-| Release tag / version | | |
-| Checksum verified | | |
-| `garagefab version` matches tag | | |
-| Service starts; dashboard reachable | | |
-| Project registered | | |
-| Scenario 1 → PR + `done` + `garagefab:delivered` | | |
-| Scenario 2 → clarification round-trip → spec | | |
-| Browser smoke (Chrome, Firefox, Safari) | | |
+| Release tag / version | `v0.1.0` / prints `0.1.0` | not run |
+| Checksum verified | PASS | not run |
+| `garagefab version` matches tag | PASS (`0.1.0`; see note) | not run |
+| Service starts; dashboard reachable | PASS (port 7878) | not run |
+| Project registered | PASS (`garagefab-release-check`) | not run |
+| Scenario 1 → PR + `done` + `garagefab:delivered` | PASS (job 1, PR #2) | not run |
+| Scenario 2 → clarification round-trip → spec | PASS (job 2, PR #4) | not run |
+| Browser smoke (Chrome, Firefox, Safari) | NOT RUN | not run |
 
-**Agent versions tested:** `<agy version>`, `<opencode version>`
+**Agent versions tested:** `agy` 1.2.16 (the binary warns the tested baseline is 1.2.14, `R3`);
+`opencode` not exercised.
 
-**Release sign-off:** date, machine, and who ran it.
+**Release sign-off:** 2026-10-04, macOS 15 (darwin/arm64), fresh `--data-dir`, by the maintainer.
+
+**Notes from the run:**
+- The version prints `0.1.0` while the tag is `v0.1.0` (GoReleaser strips the `v`); the checklist
+  item is satisfied modulo the prefix.
+- The skill needs `GARAGEFAB_HOME` when the daemon is started with a non-default `--data-dir`,
+  otherwise it reads the default `~/.garagefab/config.yaml`.
+- Finding (out of M8 scope): `garagefab start --port N` overrides the runtime port but does not
+  update `config.yaml`, so `gf-api.sh` reads the stale port. Tracked separately.

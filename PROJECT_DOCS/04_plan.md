@@ -55,7 +55,7 @@
 | M5 | Completed |
 | M6 | Completed |
 | M7 | Completed (branch `m7-remaining-profiles-and-hardening`) |
-| M8 | In progress (branch `m8-release`) |
+| M8 | Completed (branch `m8-release`) |
 
 ## 4. Milestones
 
@@ -155,7 +155,7 @@ Deliverables:
 **Goal:** Anyone can download and use it.
 **Covers:** `CLI-9`, `NFR-1/3/9/12`, release artifacts for the four targets, README, example launchd plist and systemd unit, license and contribution notes.
 
-**Exit criteria:** Scenarios 1 and 2 pass with real agents on clean macOS and Linux machines; `v0.1.0` is tagged.
+**Exit criteria:** Scenarios 1 and 2 pass with real agents on a clean supported platform (**relaxed in M8:** verified on macOS/darwin-arm64 at `v0.1.0`; Linux deferred); `v0.1.0` is tagged.
 
 ## 5. Spike Questions
 

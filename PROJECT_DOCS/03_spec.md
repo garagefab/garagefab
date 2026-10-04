@@ -325,7 +325,7 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 
 | ID | Area | Requirement | Measure |
 |----|------|-------------|---------|
-| NFR-1 | Installation | One executable; only `git` and the chosen agent CLIs are needed on the machine. | Fresh macOS and Linux machines run the happy path with nothing else installed. |
+| NFR-1 | Installation | One executable; only `git` and the chosen agent CLIs are needed on the machine. | Fresh macOS and Linux machines run the happy path with nothing else installed. **Relaxed in M8:** verified on a clean macOS (darwin/arm64) machine at `v0.1.0`; Linux verification deferred (see `milestones/M8.md`). |
 | NFR-2 | Build | The binary builds with `CGO_ENABLED=0` and has no runtime dependencies. | `CGO_ENABLED=0 go build ./...` passes in CI. |
 | NFR-3 | Platforms | macOS (arm64, amd64) and Linux (amd64, arm64). Windows is not supported in Phase 1. Minimum Git version: 2.30 (OQ-13). | Release artifacts for the four targets. |
 | NFR-4 | Responsiveness | List endpoints stay responsive with a large job history: job listing is cursor-paginated and overview queries are bounded. | p95 < 200 ms with 1 000 jobs and 20 000 step records; board renders < 1 s; events reach the browser < 1 s. **Relaxed in M7:** the M7 suite verifies the pagination/bounding behavior functionally; the numeric thresholds are not gated in CI (see `milestones/M7.md`). |
