@@ -55,7 +55,7 @@
 | M5 | Completed |
 | M6 | Completed |
 | M7 | Completed (branch `m7-remaining-profiles-and-hardening`) |
-| M8 | Not started |
+| M8 | Completed (branch `m8-release`) |
 
 ## 4. Milestones
 
@@ -247,15 +247,15 @@ Answer each question for both agents and record exact commands and outputs.
 
 | ID | Item | Decide by |
 |----|------|-----------|
-| P-1 | Open-source license (for example MIT or Apache-2.0) | Before the first public commit (M0) |
+| P-1 | Open-source license (for example MIT or Apache-2.0) | Resolved (M8): MIT — `LICENSE` |
 | P-2 | Does `agy` read `GEMINI.md`, `AGENTS.md`, or both? If it needs `GEMINI.md`, add a minimal pointer file | Spike A |
 | P-3 | Checkpoint commits may trigger the developer's Git hooks and fail. Proposal: use `--no-verify` for Garagefab's own commits and say so in the docs | M1 |
 | P-4 | Manual dogfooding artifacts before Garagefab runs: proposal is `.garagefab/jobs/<n>/` with the same layout | Start of M0 |
 | P-5 | Fake agent design: one binary driven by a scenario file or flags | Start of M1 |
 | P-6 | CI provider: assumed GitHub Actions with a macOS and Linux matrix | M0 |
-| P-7 | Release tooling (for example goreleaser; build-time only) | M8 |
+| P-7 | Release tooling (for example goreleaser; build-time only) | Resolved (M8): GoReleaser — `architecture.md` D25 |
 | P-8 | `spec.md` OQ-7 (skill locations and format) and OQ-10 (job spec headings, refine after real runs) | Spike A, M5 |
-| P-9 | Location of documents in the repository (root or `docs/`); update `AGENTS.md` links accordingly | M0 |
+| P-9 | Location of documents in the repository (root or `docs/`); update `AGENTS.md` links accordingly | Resolved (M8): documents under `PROJECT_DOCS/` |
 
 ## 10. Updating This Plan
 

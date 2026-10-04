@@ -336,7 +336,7 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 | NFR-9 | Browsers | Latest two versions of Chrome, Firefox, and Safari. | Manual smoke test per release. |
 | NFR-10 | Code quality | English code, comments, and docs. Exported identifiers documented. Linters and `go vet` pass. `internal/factory` statement coverage ≥ 80%. | CI gates. |
 | NFR-11 | Observability | Structured application logs (`slog`) with job and step ids. | Log lines carry `job_id` where applicable. |
-| NFR-12 | Upgrades | Migrations are forward-only; upgrading preserves data. | A test migrates the previous release's database. |
+| NFR-12 | Upgrades | Migrations are forward-only; upgrading preserves data. | A test migrates the previous release's database. **Relaxed in M8:** forward-only, data-preserving migrations remain guaranteed by `pressly/goose`; the "previous release database" test is deferred to Phase 2, since there is no prior release at `v0.1.0` (see `milestones/M8.md`). |
 
 ## 6. Data Contracts
 

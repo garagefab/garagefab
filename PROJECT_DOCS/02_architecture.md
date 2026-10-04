@@ -59,6 +59,7 @@ Derived from `intent.md`; each one has a concrete architectural consequence.
 | D22 | All GitHub operations (issues, labels, comments, pull requests) use the **GitHub CLI `gh`** through `os/exec`, behind a `GHRunner` interface in `provider/github`. Authentication comes from `gh auth login` or `GH_TOKEN`/`GITHUB_TOKEN`; Garagefab stores, reads, and logs no GitHub token. `git push` stays on system `git` with the user's credentials (`gh auth setup-git` is recommended). `gh` is required only for projects that set `github.repo` | No token configuration, no HTTP/GraphQL client to maintain, structured `--json` output, same execution model as `git`. Replaces D9 |
 | D23 | **GitHub Projects v2 is not used.** Issue intake is triggered by an issue label (`github.intake_label`, default `garagefab`) plus exactly one `type:<work_type>` label. Stage feedback is written to the issue as one mutually exclusive `garagefab:*` state label plus comments, applied asynchronously by the poller | The dashboard already is the board; Projects v2 needs fragile GraphQL node IDs, broad classic tokens on personal accounts, and a manual board setup. Replaces the Project parts of D18. Spike B is cancelled |
 | D24 | API-token rotation (`garagefab token rotate`) runs against a **stopped** daemon: it acquires the data-dir lock, refuses with a clear message if a server is running (override with `--force`), rewrites `api_token` atomically (`0600`), and deletes all sessions. The new bearer token takes effect on the next `garagefab start` (the running server keeps the in-memory token until then); sessions die immediately via row deletion | Bearer validation compares the in-memory token and Phase 1 has no config hot reload, so refusing by default prevents a half-rotated state where the config file and the running server disagree |
+| D25 | Release artifacts are produced by **GoReleaser** in a tag-triggered GitHub Actions workflow: four targets (`darwin`/`linux` × `amd64`/`arm64`), `CGO_ENABLED=0`, version injected via the existing `internal/version` ldflags, and the UI built in a `before` hook so the embedded dashboard is present. Example launchd and systemd units ship at both user and system level; the README documents tmux, launchd, and systemd | GoReleaser is a build-time CLI with no Go dependency or runtime footprint, and cross-compiling four pure-Go targets is trivial with `CGO_ENABLED=0`. Closes plan P-7 |
 
 ## 4. System Overview
 
@@ -470,6 +471,7 @@ An **orphan agent** is a child process still running after Garagefab died. On ev
 ## 21. Build and Distribution
 
 - `make build`: build UI → `go build` with `CGO_ENABLED=0` → `./bin/garagefab`.
+- Release artifacts are built by **GoReleaser** on a `v*` tag (D25); `make release-snapshot` builds them locally.
 - Release targets: `darwin/arm64`, `darwin/amd64`, `linux/amd64`, `linux/arm64`.
 - Paths use `filepath.Join`/`Clean` everywhere; no hardcoded separators.
 - Prerequisites on the user's machine: `git` and the chosen agent CLIs only.
