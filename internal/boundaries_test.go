@@ -89,12 +89,13 @@ func TestArchitectureImportBoundaries(t *testing.T) {
 				}
 			}
 
-			// Rule 1: factory must not import store, worker, provider, or server
+			// Rule 1: factory must not import store, worker, provider, server, or intake
 			if strings.HasPrefix(slashPath, "internal/factory/") {
 				if strings.Contains(importPath, "/internal/store") ||
 					strings.Contains(importPath, "/internal/worker") ||
 					strings.Contains(importPath, "/internal/provider") ||
-					strings.Contains(importPath, "/internal/server") {
+					strings.Contains(importPath, "/internal/server") ||
+					strings.Contains(importPath, "/internal/intake") {
 					t.Errorf("Architecture Rule 1 violation in %s: factory must not import %s", relPath, importPath)
 				}
 			}
