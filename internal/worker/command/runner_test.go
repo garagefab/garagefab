@@ -215,3 +215,26 @@ func TestCommandRunner_ContextCancel_KillsProcessGroup_RCV1(t *testing.T) {
 		t.Fatalf("command did not terminate promptly after context cancel")
 	}
 }
+
+// TestSecurity_GhTokensNotExposed_GHB4 verifies requirement GHB-4:
+// GH_TOKEN and GITHUB_TOKEN are never exposed to child processes, even if explicitly listed in passthrough.
+func TestSecurity_GhTokensNotExposed_GHB4(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ghp_leaked1")
+	t.Setenv("GITHUB_TOKEN", "ghs_leaked2")
+
+	// Even if an administrator or rogue project config lists them in passthrough or custom env
+	passthrough := []string{"GH_TOKEN", "GITHUB_TOKEN"}
+	custom := map[string]string{
+		"GH_TOKEN":     "ghp_custom_token",
+		"GITHUB_TOKEN": "ghs_custom_token",
+	}
+
+	sanitized := command.SanitizeEnvWithPassthrough(passthrough, custom)
+
+	for _, entry := range sanitized {
+		upper := strings.ToUpper(entry)
+		if strings.HasPrefix(upper, "GH_TOKEN=") || strings.HasPrefix(upper, "GITHUB_TOKEN=") {
+			t.Errorf("GHB-4 violation: found %s in child process environment", entry)
+		}
+	}
+}

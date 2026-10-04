@@ -106,6 +106,8 @@ type Job struct {
 	WorkType     string    `json:"work_type"`
 	Title        string    `json:"title"`
 	Intent       string    `json:"intent"`
+	Source       string    `json:"source"`
+	SourceRef    string    `json:"source_ref"`
 	Stage        string    `json:"stage"`
 	Status       string    `json:"status"`
 	BranchName   string    `json:"branch_name"`
@@ -181,6 +183,7 @@ type WorktreeManager interface {
 	Remove(ctx context.Context, repoPath, worktreePath, branchName string, deleteBranch bool) error
 	Diff(ctx context.Context, worktreePath, baseSHA string) (string, error)
 	HeadSHA(ctx context.Context, worktreePath string) (string, error)
+	Push(ctx context.Context, worktreePath, remote, branch string) error
 	WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error
 	ReadArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) ([]byte, error)
 	RemoveArtifact(ctx context.Context, worktreePath string, jobID int64, filename string) error
@@ -261,6 +264,7 @@ type StoreTx interface {
 	UpdateJobHead(ctx context.Context, jobID int64, headSHA string) error
 	RecordEvent(ctx context.Context, jobID int64, eventType string, payload string) error
 	RecordApproval(ctx context.Context, a *Approval) error
+	UpdateJobPR(ctx context.Context, jobID int64, prURL string) error
 }
 
 // GuardrailViolation represents an existing protected file that was modified or deleted (GRD-1).
@@ -287,9 +291,17 @@ type ProjectGuardrails struct {
 	Commands       []string `yaml:"commands"`
 }
 
+// ProjectGitHub defines GitHub repository integration settings per project (GHB-1, DLV-1).
+type ProjectGitHub struct {
+	Repo           string `yaml:"repo"`
+	IntakeLabel    string `yaml:"intake_label"`
+	PRIssueKeyword string `yaml:"pr_issue_keyword"`
+}
+
 // ProjectConfig defines per-project configuration loaded from `<repo>/.garagefab/project.yaml`.
 type ProjectConfig struct {
 	BaseRef           string            `yaml:"base_ref"`
+	GitHub            ProjectGitHub     `yaml:"github"`
 	Agents            map[string]string `yaml:"agents"`
 	AgentTimeout      time.Duration     `yaml:"agent_timeout"`
 	Commands          ProjectCommands   `yaml:"commands"`
@@ -300,4 +312,26 @@ type ProjectConfig struct {
 // ProjectConfigProvider defines the outbound port to load per-project configuration.
 type ProjectConfigProvider interface {
 	GetProjectConfig(ctx context.Context, repoPath string) (*ProjectConfig, error)
+}
+
+// PullRequest represents pull request metadata returned from the PR provider (DLV-1, DLV-2).
+type PullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+	State  string `json:"state"` // "OPEN", "CLOSED", "MERGED"
+}
+
+// PullRequestRequest specifies parameters for publishing a delivery PR (DLV-1).
+type PullRequestRequest struct {
+	Repo  string
+	Base  string
+	Head  string
+	Title string
+	Body  string
+}
+
+// PullRequestProvider defines the outbound port for inspecting and publishing pull requests.
+type PullRequestProvider interface {
+	FindPullRequest(ctx context.Context, repo, head string) (*PullRequest, error)
+	CreatePullRequest(ctx context.Context, req PullRequestRequest) (*PullRequest, error)
 }

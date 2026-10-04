@@ -61,11 +61,6 @@ type EngineConfig struct {
 	EnvPassthrough    []string      `yaml:"env_passthrough"`     // Environment variables allowed into agent subprocesses
 }
 
-// GitHubConfig holds configuration for GitHub repository integration.
-type GitHubConfig struct {
-	TokenEnv string `yaml:"token_env"` // Name of the OS environment variable holding the personal access token
-}
-
 // ServerConfig holds HTTP server and authentication configuration.
 type ServerConfig struct {
 	Listen   string `yaml:"listen"`    // Host and port to bind (e.g. 127.0.0.1:7878)
@@ -76,7 +71,6 @@ type ServerConfig struct {
 type Config struct {
 	Server  ServerConfig `yaml:"server"`
 	Engine  EngineConfig `yaml:"engine"`
-	GitHub  GitHubConfig `yaml:"github"`
 	DataDir string       `yaml:"-"` // Resolved absolute path on disk (excluded from YAML serialization)
 }
 
@@ -98,9 +92,6 @@ func Default() *Config {
 				Command: 10 * time.Minute,
 			},
 			EnvPassthrough: []string{},
-		},
-		GitHub: GitHubConfig{
-			TokenEnv: "GARAGEFAB_GITHUB_TOKEN",
 		},
 	}
 }

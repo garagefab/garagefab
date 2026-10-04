@@ -137,6 +137,9 @@ func (t *fakeTxForScheduler) RecordEvent(ctx context.Context, jobID int64, event
 func (t *fakeTxForScheduler) RecordApproval(ctx context.Context, a *Approval) error {
 	return nil
 }
+func (t *fakeTxForScheduler) UpdateJobPR(ctx context.Context, jobID int64, prURL string) error {
+	return nil
+}
 
 type fakeWorktreeManager struct{}
 
@@ -157,6 +160,9 @@ func (f *fakeWorktreeManager) Diff(ctx context.Context, worktreePath, baseSHA st
 }
 func (f *fakeWorktreeManager) HeadSHA(ctx context.Context, worktreePath string) (string, error) {
 	return "sha", nil
+}
+func (f *fakeWorktreeManager) Push(ctx context.Context, worktreePath, remote, branch string) error {
+	return nil
 }
 func (f *fakeWorktreeManager) WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error {
 	return nil

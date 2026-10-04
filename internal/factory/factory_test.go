@@ -242,6 +242,15 @@ func (tx *mockTx) RecordApproval(ctx context.Context, a *factory.Approval) error
 	return nil
 }
 
+func (tx *mockTx) UpdateJobPR(ctx context.Context, jobID int64, prURL string) error {
+	j, ok := tx.store.jobs[jobID]
+	if !ok {
+		return fmt.Errorf("job %d not found", jobID)
+	}
+	j.PRURL = prURL
+	return nil
+}
+
 // MockWorktreeManager provides an in-memory double of factory.WorktreeManager.
 type MockWorktreeManager struct {
 	createdWorktrees  map[int64]string
@@ -252,6 +261,11 @@ type MockWorktreeManager struct {
 	artifacts         map[string][]byte
 	tamperedDiff      string
 	currentHead       string
+	pushErr           error
+	pushedRemotes     []string
+	pushedBranches    []string
+	removedPaths      []string
+	lastDeleteBranch  bool
 }
 
 func newMockWorktreeManager() *MockWorktreeManager {
@@ -287,6 +301,8 @@ func (m *MockWorktreeManager) Reset(ctx context.Context, worktreePath, targetSHA
 }
 
 func (m *MockWorktreeManager) Remove(ctx context.Context, repoPath, worktreePath, branchName string, deleteBranch bool) error {
+	m.removedPaths = append(m.removedPaths, worktreePath)
+	m.lastDeleteBranch = deleteBranch
 	return nil
 }
 
@@ -305,6 +321,15 @@ func (m *MockWorktreeManager) HeadSHA(ctx context.Context, worktreePath string) 
 		return m.currentHead, nil
 	}
 	return "head123", nil
+}
+
+func (m *MockWorktreeManager) Push(ctx context.Context, worktreePath, remote, branch string) error {
+	m.pushedRemotes = append(m.pushedRemotes, remote)
+	m.pushedBranches = append(m.pushedBranches, branch)
+	if m.pushErr != nil {
+		return m.pushErr
+	}
+	return nil
 }
 
 func (m *MockWorktreeManager) WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error {

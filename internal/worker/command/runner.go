@@ -82,8 +82,8 @@ func NewRunner() *Runner {
 // allowing specific named variables (e.g. AI provider API keys) to bypass the secret blacklist.
 //
 // Security Invariants:
-//  1. Hard Deny: Any variable matching GARAGEFAB_* is ALWAYS stripped under all circumstances,
-//     even if explicitly listed in passthrough. Agents must NEVER read factory internal tokens.
+//  1. Hard Deny: Any variable matching GARAGEFAB_* or GH_TOKEN / GITHUB_TOKEN is ALWAYS stripped under all circumstances,
+//     even if explicitly listed in passthrough (SEC-6, GHB-4). Agents must NEVER read factory internal tokens or GitHub credentials.
 //  2. Allow-list: PATH, HOME, USER, LOGNAME, TMPDIR, SHELL, LANG, TERM, and LC_* are preserved.
 //  3. Blacklist: Any unlisted variable containing TOKEN, SECRET, KEY, PASSWORD, GITHUB, or AUTH
 //     is stripped unless explicitly permitted via the passthrough slice.
@@ -107,7 +107,8 @@ func SanitizeEnvWithPassthrough(passthrough []string, customEnv map[string]strin
 
 	isHardDenied := func(key string) bool {
 		upper := strings.ToUpper(key)
-		return strings.HasPrefix(upper, "GARAGEFAB") || strings.Contains(upper, "GARAGEFAB")
+		return strings.HasPrefix(upper, "GARAGEFAB") || strings.Contains(upper, "GARAGEFAB") ||
+			upper == "GH_TOKEN" || upper == "GITHUB_TOKEN"
 	}
 
 	isSecret := func(key string) bool {
@@ -254,7 +255,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		scannerBuf := make([]byte, 64*1024)
 		scanner.Buffer(scannerBuf, 2*1024*1024)
 		for scanner.Scan() {
-			text := scanner.Text()
+			text := MaskTokens(scanner.Text())
 			nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 			// Format: [2026-10-02T12:00:00Z] [stdout] Line contents (LOG-2)
 			logLine := fmt.Sprintf("[%s] [%s] %s\n", nowStr, streamName, text)

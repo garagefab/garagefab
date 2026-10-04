@@ -401,3 +401,22 @@ func (m *Manager) ListArtifacts(ctx context.Context, worktreePath string, jobID 
 	}
 	return list, nil
 }
+
+// Push pushes the specified job branch from the worktree to the remote repository (DLV-1, DLV-3).
+// It acquires the per-worktree mutex lock to prevent concurrent Git operations.
+func (m *Manager) Push(ctx context.Context, worktreePath, remote, branch string) error {
+	lock := m.getWorktreeLock(worktreePath)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if remote == "" {
+		remote = "origin"
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "push", "-u", remote, branch)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("worktree: git push %s %s: %s: %w", remote, branch, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}

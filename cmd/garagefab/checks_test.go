@@ -24,9 +24,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/garagefab/garagefab/internal/store"
 )
 
 // TestParseGitVersion verifies that validateGitVersionOutput correctly parses
@@ -144,5 +150,134 @@ func TestCheckAgent_Preflight_R3(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestStartup_GhMissing_CLI7 verifies requirement CLI-7 and Decision P1:
+// Missing, outdated, or unauthenticated GitHub CLI emits startup warning and logs
+// an intake error on overview, without crashing the process.
+func TestStartup_GhMissing_CLI7(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "checks_test.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Project without github.repo -> CheckGitHubCLI is not required
+	noGHDir := t.TempDir()
+	p1 := &store.Project{
+		Name:     "local-only",
+		RepoPath: noGHDir,
+	}
+	if err := db.Projects().CreateProject(ctx, p1); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	res := CheckGitHubCLI(ctx, db, nil, nil, nil, nil)
+	if res.Required {
+		t.Errorf("expected Required=false when no project sets github.repo")
+	}
+
+	// 2. Project with github.repo
+	ghRepoDir := t.TempDir()
+	gfDir := filepath.Join(ghRepoDir, ".garagefab")
+	if err := os.MkdirAll(gfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gfDir, "project.yaml"), []byte("github:\n  repo: owner/repo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p2 := &store.Project{
+		Name:     "gh-project",
+		RepoPath: ghRepoDir,
+	}
+	if err := db.Projects().CreateProject(ctx, p2); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	// Case A: gh binary missing on PATH
+	var outBuf bytes.Buffer
+	res = CheckGitHubCLI(
+		ctx, db, &outBuf,
+		func(bin string) (string, error) { return "", errors.New("not found") },
+		func() (string, error) { return "", nil },
+		func() error { return nil },
+	)
+	if !res.Required {
+		t.Errorf("expected Required=true")
+	}
+	if res.Installed {
+		t.Errorf("expected Installed=false")
+	}
+	if !strings.Contains(res.Warning, "not installed or not in PATH") {
+		t.Errorf("unexpected warning: %q", res.Warning)
+	}
+	if !strings.Contains(outBuf.String(), "not installed") {
+		t.Errorf("expected warning printed to out, got: %q", outBuf.String())
+	}
+
+	// Verify intake error was recorded in SQLite
+	intakeErrs, err := db.Intake().ListIntakeErrors(ctx, &p2.ID)
+	if err != nil {
+		t.Fatalf("ListIntakeErrors failed: %v", err)
+	}
+	if len(intakeErrs) != 1 || !strings.Contains(intakeErrs[0].Message, "not installed") {
+		t.Fatalf("expected 1 provider intake error, got %+v", intakeErrs)
+	}
+
+	// Case B: gh outdated (< 2.0.0)
+	outBuf.Reset()
+	res = CheckGitHubCLI(
+		ctx, db, &outBuf,
+		func(bin string) (string, error) { return "/bin/gh", nil },
+		func() (string, error) { return "gh version 1.14.0 (2021-08-01)", nil },
+		func() error { return nil },
+	)
+	if !res.Installed || res.VersionValid {
+		t.Errorf("expected Installed=true, VersionValid=false, got Installed=%v, VersionValid=%v", res.Installed, res.VersionValid)
+	}
+	if !strings.Contains(res.Warning, "version 2.0.0+ is required") {
+		t.Errorf("unexpected version warning: %q", res.Warning)
+	}
+
+	// Case C: gh unauthenticated
+	outBuf.Reset()
+	res = CheckGitHubCLI(
+		ctx, db, &outBuf,
+		func(bin string) (string, error) { return "/bin/gh", nil },
+		func() (string, error) { return "gh version 2.45.0 (2024-02-28)", nil },
+		func() error { return errors.New("logged out") },
+	)
+	if !res.Installed || !res.VersionValid || res.Authenticated {
+		t.Errorf("expected Installed=true, VersionValid=true, Authenticated=false")
+	}
+	if !strings.Contains(res.Warning, "not authenticated") {
+		t.Errorf("unexpected auth warning: %q", res.Warning)
+	}
+
+	// Case D: gh fully valid and authenticated -> clean pass, clears intake error
+	outBuf.Reset()
+	res = CheckGitHubCLI(
+		ctx, db, &outBuf,
+		func(bin string) (string, error) { return "/bin/gh", nil },
+		func() (string, error) { return "gh version 2.45.0 (2024-02-28)", nil },
+		func() error { return nil },
+	)
+	if !res.Installed || !res.VersionValid || !res.Authenticated {
+		t.Errorf("expected clean pass, got: %+v", res)
+	}
+	if res.Warning != "" {
+		t.Errorf("expected no warning, got: %q", res.Warning)
+	}
+
+	intakeErrs, err = db.Intake().ListIntakeErrors(ctx, &p2.ID)
+	if err != nil {
+		t.Fatalf("ListIntakeErrors failed: %v", err)
+	}
+	if len(intakeErrs) != 0 {
+		t.Fatalf("expected 0 intake errors after clean check, got %+v", intakeErrs)
 	}
 }

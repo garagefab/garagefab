@@ -384,11 +384,33 @@ func (r *JobRepo) ListActiveStatusJobs(ctx context.Context) ([]*JobStatusItem, e
 		items = append(items, &item)
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list active status jobs rows: %w", err)
+	return items, nil
+}
+
+// UpdateJobPR updates the pull request URL of a job upon successful delivery (DLV-1).
+//
+// ENTERPRISE / JAVA SPRING COMPARISON:
+// Equivalent to a Spring Data `@Modifying @Query("UPDATE Job j SET j.prURL = :prURL, j.updatedAt = :now WHERE j.id = :id")`.
+// In Go, raw parameterized SQL executes directly via `dbtx` within an active transaction.
+func (r *JobRepo) UpdateJobPR(ctx context.Context, jobID int64, prURL string) error {
+	now := time.Now().UTC()
+	nowStr := formatTime(now)
+
+	query := `UPDATE jobs SET pr_url = ?, updated_at = ? WHERE id = ?`
+	res, err := r.q.ExecContext(ctx, query, prURL, nowStr, jobID)
+	if err != nil {
+		return fmt.Errorf("store: update job pr: %w", err)
 	}
 
-	return items, nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: get rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+
+	return nil
 }
 
 func scanJob(row rowScanner) (*Job, error) {

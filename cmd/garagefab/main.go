@@ -25,6 +25,8 @@ import (
 	"github.com/garagefab/garagefab"
 	"github.com/garagefab/garagefab/internal/config"
 	"github.com/garagefab/garagefab/internal/factory"
+	"github.com/garagefab/garagefab/internal/intake"
+	"github.com/garagefab/garagefab/internal/provider/github"
 	"github.com/garagefab/garagefab/internal/server"
 	"github.com/garagefab/garagefab/internal/store"
 	"github.com/garagefab/garagefab/internal/version"
@@ -142,6 +144,10 @@ var startCmd = &cobra.Command{
 		// are on PATH and match tested version baselines.
 		CheckRegisteredProjectAgents(context.Background(), db, os.Stdout)
 
+		// 4d. Pre-flight GitHub CLI Checks (CLI-7, GHB-1).
+		// Validate that gh is installed (>= 2.0.0) and authenticated if any project uses GitHub.
+		CheckGitHubCLI(context.Background(), db, os.Stdout, nil, nil, nil)
+
 		// 5. Dependency Injection / Wiring (Hexagonal Architecture).
 		// 'factory' defines interfaces (ports) and cannot import 'store' or 'worker' directly.
 		// These adapters bridge the concrete implementations to the factory's interfaces.
@@ -173,6 +179,24 @@ var startCmd = &cobra.Command{
 
 		scheduler := factory.NewScheduler(storeAdapter, engine, cfg.Engine.MaxConcurrentJobs)
 		scheduler.SetProjectConfigProvider(projCfgAdapter)
+
+		// 5b. GitHub Provider & Adapters (M6: GHB-1, DLV-1, INT-3).
+		ghRunner := github.NewDefaultGHRunner("")
+		ghClient := github.NewClient(ghRunner)
+		prAdapter := newFactoryPullRequestAdapter(ghClient)
+		engine.SetPullRequestProvider(prAdapter)
+
+		// 5c. Intake Poller & Issue Feedback Reconciler (M6: INT-2..7, GHB-2, GHB-5).
+		issueSourceAdapter := newIntakeIssueSourceAdapter(ghClient)
+		issueFeedbackAdapter := newIntakeIssueFeedbackAdapter(ghClient)
+		feedbackReconciler := intake.NewFeedbackReconciler(issueFeedbackAdapter)
+
+		poller := intake.NewPoller(db, issueSourceAdapter, scheduler, 30*time.Second)
+		poller.SetFeedbackReconciler(feedbackReconciler)
+
+		pollerCtx, cancelPoller := context.WithCancel(context.Background())
+		defer cancelPoller()
+		go poller.Start(pollerCtx)
 
 		// Start the job scheduler in a background goroutine (lightweight async thread in Go).
 		schedulerCtx, cancelScheduler := context.WithCancel(context.Background())
@@ -208,7 +232,8 @@ var startCmd = &cobra.Command{
 
 		fmt.Println("\nShutting down gracefully...")
 
-		// Stop admitting new jobs immediately
+		// Stop admitting new jobs and stop intake poller immediately
+		cancelPoller()
 		cancelScheduler()
 
 		// Allow active HTTP requests up to 5 seconds to complete cleanly before terminating.
