@@ -54,7 +54,8 @@
 | SB | Cancelled (superseded by D22/D23) |
 | M5 | Completed |
 | M6 | Completed |
-| M7–M8 | Not started |
+| M7 | In progress (detailed plan: `milestones/M7.md`) |
+| M8 | Not started |
 
 ## 4. Milestones
 

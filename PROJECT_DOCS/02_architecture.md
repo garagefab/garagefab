@@ -58,6 +58,7 @@ Derived from `intent.md`; each one has a concrete architectural consequence.
 | D21 | Agent CLI invocations: headless flags (`agy --print <prompt> --dangerously-skip-permissions --output-format json`, `opencode run --auto --format json <prompt>`), fresh session default, prompt via CLI args. Exit code 0 does not imply task success; adapters must inspect JSON status and verify artifacts/diff | Spike A findings (`PROJECT_DOCS/spikes/agent-clis.md`); agent CLIs exit 0 even on task-level failure |
 | D22 | All GitHub operations (issues, labels, comments, pull requests) use the **GitHub CLI `gh`** through `os/exec`, behind a `GHRunner` interface in `provider/github`. Authentication comes from `gh auth login` or `GH_TOKEN`/`GITHUB_TOKEN`; Garagefab stores, reads, and logs no GitHub token. `git push` stays on system `git` with the user's credentials (`gh auth setup-git` is recommended). `gh` is required only for projects that set `github.repo` | No token configuration, no HTTP/GraphQL client to maintain, structured `--json` output, same execution model as `git`. Replaces D9 |
 | D23 | **GitHub Projects v2 is not used.** Issue intake is triggered by an issue label (`github.intake_label`, default `garagefab`) plus exactly one `type:<work_type>` label. Stage feedback is written to the issue as one mutually exclusive `garagefab:*` state label plus comments, applied asynchronously by the poller | The dashboard already is the board; Projects v2 needs fragile GraphQL node IDs, broad classic tokens on personal accounts, and a manual board setup. Replaces the Project parts of D18. Spike B is cancelled |
+| D24 | API-token rotation (`garagefab token rotate`) runs against a **stopped** daemon: it acquires the data-dir lock, refuses with a clear message if a server is running (override with `--force`), rewrites `api_token` atomically (`0600`), and deletes all sessions. The new bearer token takes effect on the next `garagefab start` (the running server keeps the in-memory token until then); sessions die immediately via row deletion | Bearer validation compares the in-memory token and Phase 1 has no config hot reload, so refusing by default prevents a half-rotated state where the config file and the running server disagree |
 
 ## 4. System Overview
 
@@ -228,7 +229,7 @@ Rules:
 ## 9. Pipeline Engine
 
 ### 9.1 Profiles
-Four fixed profiles are Go values (ordered stage lists), not config. Phase 2 may load them from configuration.
+Four fixed profiles define the active stages per work type (`spec.md` §4.3): `bug_fix` 01→02→03→04→05→06→07, `feature` 01→02→04→05→06→07, `refactor` 01→04→05→06→07, `docs` 01→04→05→07 (a review `request_changes` routes through 06). They are fixed, not config; Phase 1 enforces them imperatively in `Engine.ExecuteJob` (Phase 2 may load them from configuration).
 
 ### 9.2 Step execution
 A step is one of:
@@ -257,10 +258,10 @@ A pure function in `factory`, no I/O, fully table-tested.
 Guardrail violations (e.g., a protected file was modified) are **Flawed** once with a precise message (the agent can undo it), then count toward the attempt limit.
 
 ### 9.5 Guardrails
-Guardrails are command steps that run after every agent step that changes code. The built-in guardrail `protected_paths` is implemented in Go in `worker/command`: it compares `git diff --name-status <step-start-sha>` against glob patterns from `project.yaml` and fails if an **existing** file matching a pattern was modified, deleted, or renamed. New files are allowed, so agents can still add tests while existing tests stay protected. Users may add their own shell guardrails.
+Guardrails are command steps that run after every agent step that changes code. The built-in guardrail `protected_paths` is implemented in Go in `worker/command`: it compares `git diff --name-status <step-start-sha>` against glob patterns from `project.yaml` and fails if an **existing** file matching a pattern was modified, deleted, or renamed. New files are allowed, so agents can still add tests while existing tests stay protected. Users may add their own shell guardrails. A second built-in guardrail, `test_paths`, applies only to the probe step (`bug_fix`, `GRD-5`): when set, every file the probe adds or changes must match one of those globs (the probe's own `probe.json` artifact is always allowed); an unmatched change is a violation. Empty `test_paths` means no restriction.
 
 ### 9.6 Evidence
-The factory assembles the chain of evidence from existing records: step results, test summary, review report, diff stats, warnings count, and links to artifacts and logs. Nothing new is collected. The evidence summary is also written to `.garagefab/jobs/<id>/evidence.md` and committed, so it travels with the PR.
+The factory assembles the chain of evidence from existing records: step results, test summary, review report, diff stats, warnings count, the probe result for `bug_fix` jobs (`PRB-5`), and links to artifacts and logs. Nothing new is collected. The evidence summary is also written to `.garagefab/jobs/<id>/evidence.md` and committed, so it travels with the PR.
 
 ## 10. Concurrency Model
 
@@ -401,6 +402,7 @@ commands:
   lint:  ["golangci-lint run"]
 guardrails:
   protected_paths: ["**/*_test.go"]   # existing matching files cannot be modified; new files are allowed
+  test_paths: []                       # probe step (bug_fix) may only add/change files matching these globs; empty = no restriction
 github:                          # optional; enables GitHub intake, issue feedback, and delivery
   repo: owner/name
   intake_label: garagefab        # issues with this label are picked up
@@ -416,7 +418,7 @@ Validation runs at startup and when a project is added; errors name the file and
   - **Dashboard:** `garagefab start` (and `garagefab open`) opens `http://127.0.0.1:<port>/login#token=<api_token>`. The login page posts the token to `POST /api/session`, removes the fragment with `history.replaceState`, and the server sets a session cookie (`HttpOnly`, `SameSite=Strict`, 30-day expiry stored in the `Session` table). JavaScript never holds the token afterwards.
   - **Skill and CLI:** `Authorization: Bearer <api_token>`.
   - **CSRF:** cookie-authenticated `POST/PUT/DELETE` requests must carry an `Origin` header equal to the server's own origin.
-  - Rotating the API token invalidates all sessions.
+  - Rotating the API token invalidates all sessions (row deletion) and rewrites `api_token`; the new bearer token takes effect on the next `garagefab start` (see §3 D24).
 - **Routes:** `/` serves embedded `ui/dist` with SPA fallback; `/api/...` is JSON; endpoint list lives in `spec.md`.
 - **SSE:**
   - One global event stream (`/api/events`) carries state changes, from the `events` table; each message `id` is the event row id, so `Last-Event-ID` replays missed events.
