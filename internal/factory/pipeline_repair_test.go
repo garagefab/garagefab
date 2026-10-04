@@ -671,3 +671,93 @@ func TestCodingStep_MissingAgent_Blocked(t *testing.T) {
 		t.Errorf("expected job status failed, got %s", job.Status)
 	}
 }
+
+// TestSpecPrompt_IncludesProtectedPaths_GRD1 verifies that the spec stage forwards the project's
+// guardrails.protected_paths into the rendered spec prompt, and omits the section when unset.
+//
+// Why this matters (GRD-1 alignment): the spec agent plans the implementation before any coding
+// step runs. If it is unaware of protected paths it can legitimately plan an edit to a protected
+// file (e.g. go.mod or an existing *_test.go); the coding agent then follows the spec and the
+// guardrail check fails the step as Flawed/terminal. Telling the spec agent up-front, rather than
+// relying on a failure-and-repair loop, is what keeps specs guardrail-consistent.
+//
+// Sub-case structure mirrors a table-driven test: with patterns the prompt must name them, without
+// patterns the conditional section must disappear entirely (no dangling empty header).
+func TestSpecPrompt_IncludesProtectedPaths_GRD1(t *testing.T) {
+	tests := []struct {
+		name           string
+		protectedPaths []string
+		wantContains   string
+		wantAbsent     string
+	}{
+		{
+			name:           "configured patterns are rendered",
+			protectedPaths: []string{"**/*_test.go"},
+			wantContains:   "**/*_test.go",
+		},
+		{
+			name:           "no patterns means no section",
+			protectedPaths: nil,
+			wantAbsent:     "### Protected Paths",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newMockStore()
+			store.projects[1] = &factory.Project{ID: 1, Name: "alpha", RepoPath: "/repos/alpha", BaseRef: "main"}
+			store.jobs[1] = &factory.Job{
+				ID:           1,
+				ProjectID:    1,
+				WorkType:     factory.WorkTypeFeature,
+				Title:        "Subtract function",
+				Intent:       "Add a Subtract function with tests.",
+				Stage:        factory.StageClarificationAndSpec,
+				Status:       factory.StatusQueued,
+				WorktreePath: "/tmp/worktrees/alpha/1",
+			}
+
+			wtMgr := newMockWorktreeManager()
+
+			// The scripted spec agent emits a valid spec.md so the stage completes and the job
+			// advances to spec_review; we only care about the prompt it was handed.
+			agent := &ScriptableAgentRunner{
+				results: func(call int, req factory.AgentRequest) (*factory.AgentResult, error) {
+					_ = wtMgr.WriteArtifact(ctx, req.WorktreePath, req.JobID, "spec.md", []byte(validFeatureSpec))
+					return &factory.AgentResult{ExitCode: 0, Summary: "spec generated"}, nil
+				},
+			}
+
+			projCfg := &factory.ProjectConfig{
+				Guardrails: factory.ProjectGuardrails{ProtectedPaths: tc.protectedPaths},
+			}
+
+			engine := factory.NewEngine(store, wtMgr, agent, &ScriptableCommandRunner{}, t.TempDir())
+			engine.SetProjectConfigProvider(&MockProjectConfigProvider{cfg: projCfg})
+
+			if err := engine.ExecuteJob(ctx, 1); err != nil {
+				t.Fatalf("ExecuteJob failed: %v", err)
+			}
+
+			agent.mu.Lock()
+			invocations := append([]factory.AgentRequest(nil), agent.invocations...)
+			agent.mu.Unlock()
+
+			if len(invocations) == 0 {
+				t.Fatal("expected at least 1 agent invocation, got 0")
+			}
+			first := invocations[0]
+			if first.Role != factory.RoleSpec {
+				t.Fatalf("expected first agent invocation role %q, got %q", factory.RoleSpec, first.Role)
+			}
+
+			if tc.wantContains != "" && !strings.Contains(first.Prompt, tc.wantContains) {
+				t.Errorf("expected spec prompt to contain %q, got:\n%s", tc.wantContains, first.Prompt)
+			}
+			if tc.wantAbsent != "" && strings.Contains(first.Prompt, tc.wantAbsent) {
+				t.Errorf("expected spec prompt NOT to contain %q, got:\n%s", tc.wantAbsent, first.Prompt)
+			}
+		})
+	}
+}

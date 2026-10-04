@@ -329,6 +329,15 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 	var repairFeedback string
 	attempt := 0
 
+	// Resolve the project's protected-path globs once, before the retry loop: the list is stable
+	// for the whole stage, and resolving it here makes the spec prompt honest about GRD-1
+	// constraints so the spec agent never plans an edit to a protected file. nil-safe because a
+	// job may run without a resolvable project config (projCfg == nil).
+	var protectedPaths []string
+	if projCfg != nil {
+		protectedPaths = projCfg.Guardrails.ProtectedPaths
+	}
+
 	for attempt < maxAttempts {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -361,6 +370,8 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 			clarificationContent = string(clarData)
 		}
 
+		// ProtectedPaths is included so the spec's Implementation Plan stays inside GRD-1
+		// limits; the template omits the section entirely when the list is empty.
 		promptData := PromptData{
 			JobID:          job.ID,
 			WorkType:       job.WorkType,
@@ -368,6 +379,7 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 			ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
 			Clarification:  clarificationContent,
 			RepairFeedback: repairFeedback,
+			ProtectedPaths: protectedPaths,
 		}
 		prompt, err := RenderPrompt(RoleSpec, promptData)
 		if err != nil {

@@ -62,6 +62,17 @@ func TestRenderPrompt_GoldenFiles(t *testing.T) {
 			},
 		},
 		{
+			name: "spec_protected_paths",
+			role: RoleSpec,
+			data: PromptData{
+				JobID:          104,
+				WorkType:       WorkTypeFeature,
+				Intent:         "Add a Subtract function with tests.",
+				ArtifactDir:    ".garagefab/jobs/104",
+				ProtectedPaths: []string{"**/*_test.go", "go.mod"},
+			},
+		},
+		{
 			name: "coding_first_run",
 			role: RoleCoding,
 			data: PromptData{
