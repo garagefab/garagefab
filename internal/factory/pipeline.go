@@ -195,8 +195,8 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		}
 	}
 
-	// 2. Stage 01_Intent -> Transition to 02_Clarification_and_Spec for Feature profile (INT-1, PIP-1)
-	if job.WorkType == WorkTypeFeature && job.Stage == StageIntent {
+	// 2. Stage 01_Intent -> Transition to 02_Clarification_and_Spec for Feature and Bug Fix profiles (INT-1, PIP-1)
+	if (job.WorkType == WorkTypeFeature || job.WorkType == WorkTypeBugFix) && job.Stage == StageIntent {
 		if err := e.wtMgr.WriteArtifact(jobCtx, job.WorktreePath, job.ID, "intent.md", []byte(job.Intent)); err != nil {
 			return fmt.Errorf("factory: write intent.md: %w", err)
 		}
@@ -240,9 +240,17 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		}
 	}
 
+	// 3b. Stage 03_Failing_Probe: Bug Fix profile writes a reproducing probe (PRB-1..4, GRD-5)
+	if job.WorkType == WorkTypeBugFix && job.Stage == StageFailingProbe && job.Status == StatusQueued {
+		if err := e.executeProbeStage(jobCtx, job, project, projCfg); err != nil {
+			return err
+		}
+	}
+
 	// 4. Stage 04_Coding: AI Agent writes code and undergoes automated repair loop (COD-1..7, GRD-1..4)
 	if ((job.WorkType == "" || job.WorkType == WorkTypeRefactor) && (job.Stage == StageIntent || job.Stage == StageCoding)) ||
-		(job.WorkType == WorkTypeFeature && job.Stage == StageCoding) {
+		(job.WorkType == WorkTypeFeature && job.Stage == StageCoding) ||
+		(job.WorkType == WorkTypeBugFix && job.Stage == StageCoding) {
 		if err := e.executeCodingStage(jobCtx, job, project, projCfg); err != nil {
 			return err
 		}
@@ -262,7 +270,29 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		}
 	}
 
+	// Defensive hardening: a queued job whose work type has no route would be re-admitted by
+	// the scheduler indefinitely. Fail it as Blocked so it surfaces in "attention" instead.
+	if job.Status == StatusQueued && !isRoutableWorkType(job.WorkType) {
+		errMsg := fmt.Sprintf("no pipeline route for work type %q", job.WorkType)
+		_ = e.store.InTx(jobCtx, func(tx StoreTx) error {
+			_ = tx.UpdateJobState(jobCtx, job.ID, job.Stage, StatusFailed)
+			_ = tx.RecordEvent(jobCtx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, job.Stage, StatusFailed, FailureBlocked, errMsg))
+			return nil
+		})
+		return fmt.Errorf("factory: %s", errMsg)
+	}
+
 	return nil
+}
+
+// isRoutableWorkType reports whether the engine has a pipeline route for the given work type.
+func isRoutableWorkType(workType string) bool {
+	switch workType {
+	case "", WorkTypeFeature, WorkTypeBugFix, WorkTypeRefactor, WorkTypeDocs:
+		return true
+	default:
+		return false
+	}
 }
 
 // executeSpecStage executes the AI specification generation step and draft validation (SPC-1..5, LOG-3).
@@ -521,6 +551,324 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 	job.Stage = StageClarificationAndSpec
 	job.Status = StatusFailed
 	return fmt.Errorf("factory: spec generation failed after %d attempts: %s", maxAttempts, repairFeedback)
+}
+
+// executeProbeStage orchestrates the failing-probe stage for bug fixes (PRB-1..4, GRD-5).
+//
+// Rules enforced:
+// 1. The probe agent must produce a valid probe.json declaring a command and test files (PRB-1).
+// 2. The probe step may only change test files and probe.json (GRD-5).
+// 3. The declared command is run by the engine and MUST exit non-zero (PRB-2).
+// 4. A valid, failing probe is committed as a checkpoint and the job moves to 04_Coding/queued (PRB-4).
+// 5. After max_repair_attempts the job fails at 03/failed with category Manual (PRB-3).
+func (e *Engine) executeProbeStage(ctx context.Context, job *Job, project *Project, projCfg *ProjectConfig) error {
+	// Transition state to 03_Failing_Probe / running
+	err := e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(ctx, job.ID, StageFailingProbe, StatusRunning); err != nil {
+			return err
+		}
+		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageFailingProbe, StatusRunning))
+	})
+	if err != nil {
+		return fmt.Errorf("factory: transition to probe running: %w", err)
+	}
+	job.Stage = StageFailingProbe
+	job.Status = StatusRunning
+
+	maxAttempts := e.maxRepairAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	stepStartSHA := job.HeadSHA
+	if stepStartSHA == "" {
+		stepStartSHA = job.BaseSHA
+	}
+
+	var repairFeedback string
+	attempt := 0
+
+	for attempt < maxAttempts {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		currentAttempt := attempt + 1
+		logFilename := "step_probe.log"
+		if currentAttempt > 1 {
+			logFilename = fmt.Sprintf("step_probe_attempt_%d.log", currentAttempt)
+		}
+		logPath := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), logFilename)
+
+		step := &StepRun{
+			JobID:     job.ID,
+			Stage:     StageFailingProbe,
+			Kind:      StepKindAgent,
+			Attempt:   currentAttempt,
+			Executor:  "agent",
+			Status:    StepStatusRunning,
+			LogPath:   logPath,
+			StartedAt: time.Now().UTC(),
+		}
+		if err := e.store.CreateStepRun(ctx, step); err != nil {
+			return fmt.Errorf("factory: create probe step run: %w", err)
+		}
+
+		var specContent string
+		if specBytes, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil && len(specBytes) > 0 {
+			specContent = string(specBytes)
+		}
+
+		promptData := PromptData{
+			JobID:          job.ID,
+			WorkType:       job.WorkType,
+			Intent:         job.Intent,
+			ArtifactDir:    fmt.Sprintf(".garagefab/jobs/%d", job.ID),
+			Spec:           specContent,
+			RepairFeedback: repairFeedback,
+		}
+		prompt, err := RenderPrompt(RoleProbe, promptData)
+		if err != nil {
+			return fmt.Errorf("factory: render probe prompt: %w", err)
+		}
+
+		// Resolve role, agent, and step timeout (HND-2, COD-10)
+		role, _ := RoleForStage(StageFailingProbe)
+		stepTimeout := e.defaultAgentTimeout
+		if projCfg != nil && projCfg.AgentTimeout > 0 {
+			stepTimeout = projCfg.AgentTimeout
+		}
+		agentName := ""
+		if projCfg != nil {
+			agentName = projCfg.AgentForRole(role)
+		}
+		if agentName == "" && os.Getenv("GARAGEFAB_FAKE_AGENT") == "1" {
+			agentName = "fake"
+		}
+		if agentName == "" {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			now := time.Now().UTC()
+			step.EndedAt = &now
+			_ = e.store.UpdateStepRun(ctx, step)
+			errMsg := fmt.Sprintf("no agent configured for role %q (set agents.%s in .garagefab/project.yaml)", role, role)
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageFailingProbe, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, StageFailingProbe, StatusFailed, FailureBlocked, errMsg))
+				return nil
+			})
+			return fmt.Errorf("factory: %s", errMsg)
+		}
+
+		res, err := e.agentRunner.Run(ctx, AgentRequest{
+			JobID:        job.ID,
+			Stage:        StageFailingProbe,
+			Role:         role,
+			Agent:        agentName,
+			WorktreePath: job.WorktreePath,
+			Prompt:       prompt,
+			ProjectName:  project.Name,
+			LogPath:      logPath,
+			Timeout:      stepTimeout,
+			OnProcessStart: func(pid, pgid int, startTime int64) {
+				_ = e.store.CreateProcessRecord(ctx, step.ID, pid, pgid, startTime)
+			},
+		})
+
+		now := time.Now().UTC()
+		step.EndedAt = &now
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		// Handle agent process timeout (COD-10)
+		if res != nil && res.TimedOut {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			code := 1
+			step.ExitCode = &code
+			_ = e.store.UpdateStepRun(ctx, step)
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageFailingProbe, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageFailingProbe, StatusFailed, FailureBlocked))
+				return nil
+			})
+			return fmt.Errorf("factory: probe agent timed out: %s", FailureBlocked)
+		}
+
+		if err != nil || (res != nil && res.ExitCode != 0) {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureFlawed
+			if res != nil {
+				code := res.ExitCode
+				step.ExitCode = &code
+			}
+			_ = e.store.UpdateStepRun(ctx, step)
+			repairFeedback = fmt.Sprintf("Agent exited with error: %v", err)
+			attempt++
+			continue
+		}
+
+		// Validate probe.json (PRB-1)
+		probeBytes, readErr := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "probe.json")
+		var report *ProbeReport
+		var probeErr error
+		if readErr != nil {
+			probeErr = fmt.Errorf("probe.json missing: %w", readErr)
+		} else {
+			report, probeErr = ValidateProbeJSON(probeBytes)
+		}
+		if probeErr != nil {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureFlawed
+			_ = e.store.UpdateStepRun(ctx, step)
+			repairFeedback = fmt.Sprintf("probe.json invalid: %v", probeErr)
+			attempt++
+			continue
+		}
+
+		// GRD-5: the probe step may only touch test files and probe.json
+		if e.guardrailRunner != nil && projCfg != nil && len(projCfg.Guardrails.TestPaths) > 0 {
+			artifactGlob := fmt.Sprintf(".garagefab/jobs/%d/probe.json", job.ID)
+			violations, gErr := e.guardrailRunner.CheckProbeScope(ctx, job.WorktreePath, stepStartSHA, projCfg.Guardrails.TestPaths, artifactGlob)
+			if gErr == nil && len(violations) > 0 {
+				var paths []string
+				for _, v := range violations {
+					paths = append(paths, v.Path)
+				}
+				category := CategorizeFailure(FailureInput{
+					GuardrailViolation: true,
+					Attempt:            currentAttempt,
+					MaxAttempts:        maxAttempts,
+				})
+				step.Status = StepStatusFail
+				step.FailureCategory = category
+				_ = e.store.UpdateStepRun(ctx, step)
+				if category == FailureFlawed && currentAttempt < maxAttempts {
+					repairFeedback = fmt.Sprintf("Guardrail violation: the probe step modified non-test file(s): %s. Restore them and only add test files.", strings.Join(paths, ", "))
+					attempt++
+					continue
+				}
+				_ = e.store.InTx(ctx, func(tx StoreTx) error {
+					_ = tx.UpdateJobState(ctx, job.ID, StageFailingProbe, StatusFailed)
+					_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageFailingProbe, StatusFailed, category))
+					return nil
+				})
+				return fmt.Errorf("factory: probe guardrail violation: %v", paths)
+			}
+		}
+
+		// Run the probe command ourselves and require a non-zero exit (PRB-2)
+		if e.cmdRunner == nil {
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureBlocked
+			_ = e.store.UpdateStepRun(ctx, step)
+			return fmt.Errorf("factory: probe command runner not configured")
+		}
+
+		probeLogPath := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), fmt.Sprintf("step_probe_cmd_%d.log", currentAttempt))
+		probeStep := &StepRun{
+			JobID:     job.ID,
+			Stage:     StageFailingProbe,
+			Kind:      StepKindCommand,
+			Attempt:   currentAttempt,
+			Executor:  "probe",
+			Status:    StepStatusRunning,
+			LogPath:   probeLogPath,
+			StartedAt: time.Now().UTC(),
+		}
+		_ = e.store.CreateStepRun(ctx, probeStep)
+
+		cRes, cErr := e.cmdRunner.Run(ctx, CommandOptions{
+			WorkDir: job.WorktreePath,
+			Command: report.Command,
+			LogPath: probeLogPath,
+			OnProcessStart: func(pid, pgid int, startTime int64) {
+				_ = e.store.CreateProcessRecord(ctx, probeStep.ID, pid, pgid, startTime)
+			},
+		})
+
+		probeNow := time.Now().UTC()
+		probeStep.EndedAt = &probeNow
+		exitCode := 0
+		if cRes != nil {
+			exitCode = cRes.ExitCode
+		}
+		probeStep.ExitCode = &exitCode
+
+		if cErr != nil {
+			probeStep.Status = StepStatusFail
+			probeStep.FailureCategory = FailureFlawed
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureFlawed
+			_ = e.store.UpdateStepRun(ctx, probeStep)
+			_ = e.store.UpdateStepRun(ctx, step)
+			repairFeedback = fmt.Sprintf("Failed to run probe command %q: %v", report.Command, cErr)
+			attempt++
+			continue
+		}
+
+		if exitCode == 0 {
+			// The probe passed, so it does not reproduce the bug (PRB-2)
+			probeStep.Status = StepStatusFail
+			probeStep.FailureCategory = FailureFlawed
+			step.Status = StepStatusFail
+			step.FailureCategory = FailureFlawed
+			_ = e.store.UpdateStepRun(ctx, probeStep)
+			_ = e.store.UpdateStepRun(ctx, step)
+			repairFeedback = "probe passed; it must fail"
+			attempt++
+			continue
+		}
+
+		// Non-zero exit: the probe correctly reproduces the bug (PRB-2).
+		probeStep.Status = StepStatusSuccess
+		_ = e.store.UpdateStepRun(ctx, probeStep)
+		step.Status = StepStatusSuccess
+		code := 0
+		step.ExitCode = &code
+		_ = e.store.UpdateStepRun(ctx, step)
+
+		// Commit the validated probe as a checkpoint and move to coding (PRB-4)
+		headSHA, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "probe")
+		if err != nil {
+			return fmt.Errorf("factory: probe checkpoint: %w", err)
+		}
+		job.HeadSHA = headSHA
+
+		err = e.store.InTx(ctx, func(tx StoreTx) error {
+			if err := tx.UpdateJobHead(ctx, job.ID, headSHA); err != nil {
+				return err
+			}
+			if err := tx.UpdateJobState(ctx, job.ID, StageCoding, StatusQueued); err != nil {
+				return err
+			}
+			if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageCoding)); err != nil {
+				return err
+			}
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageCoding, StatusQueued))
+		})
+		if err != nil {
+			return fmt.Errorf("factory: transition to coding: %w", err)
+		}
+		job.Stage = StageCoding
+		job.Status = StatusQueued
+		return nil
+	}
+
+	// All repair attempts exhausted -> transition to 03/failed (Manual) (PRB-3)
+	err = e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(ctx, job.ID, StageFailingProbe, StatusFailed); err != nil {
+			return err
+		}
+		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"failure_category":%q}`, StageFailingProbe, StatusFailed, FailureManual))
+	})
+	if err != nil {
+		return fmt.Errorf("factory: transition to probe failed: %w", err)
+	}
+	job.Stage = StageFailingProbe
+	job.Status = StatusFailed
+	return fmt.Errorf("factory: probe generation failed after %d attempts: %s", maxAttempts, repairFeedback)
 }
 
 // executeCodingStage orchestrates the AI coding agent and the automated repair loop (COD-1..7, GRD-1..4).
@@ -1227,6 +1575,13 @@ func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error
 			return fmt.Errorf("factory: checkpoint approved spec: %w", err)
 		}
 
+		// Bug fixes run a failing-probe stage (03) before coding (PRB-1, PIP-1); other
+		// profiles go straight to coding.
+		nextStage := StageCoding
+		if job.WorkType == WorkTypeBugFix {
+			nextStage = StageFailingProbe
+		}
+
 		err = e.store.InTx(ctx, func(tx StoreTx) error {
 			approval := &Approval{
 				JobID:    job.ID,
@@ -1241,19 +1596,19 @@ func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error
 			if err := tx.UpdateJobHead(ctx, job.ID, newHeadSHA); err != nil {
 				return err
 			}
-			if err := tx.UpdateJobState(ctx, job.ID, StageCoding, StatusQueued); err != nil {
+			if err := tx.UpdateJobState(ctx, job.ID, nextStage, StatusQueued); err != nil {
 				return err
 			}
-			if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageCoding)); err != nil {
+			if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, nextStage)); err != nil {
 				return err
 			}
-			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageCoding, StatusQueued))
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, nextStage, StatusQueued))
 		})
 		if err != nil {
 			return fmt.Errorf("factory: record spec approval: %w", err)
 		}
 
-		job.Stage = StageCoding
+		job.Stage = nextStage
 		job.Status = StatusQueued
 		job.HeadSHA = newHeadSHA
 		e.notifyWake()
@@ -1541,7 +1896,7 @@ func (e *Engine) GetArtifact(ctx context.Context, jobID int64, name string) ([]b
 	case "spec":
 		filename = "spec.md"
 	case "probe":
-		filename = "probe.md"
+		filename = "probe.json"
 	case "review":
 		filename = "review.json"
 	case "evidence":
