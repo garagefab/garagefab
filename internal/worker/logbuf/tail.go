@@ -13,8 +13,9 @@
 // draining an InputStream, without materializing the whole stream.
 //
 // GO CONCEPTS:
-// - A `sync.Mutex` guards the byte slice because the buffer is written by two pipe-reader
-//   goroutines (stdout/stderr) and read after they join.
+//   - A `sync.Mutex` guards the byte slice because the buffer is written by two pipe-reader
+//     goroutines (stdout/stderr) and read after they join.
+//
 // ==============================================================================
 package logbuf
 

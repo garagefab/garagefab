@@ -49,10 +49,10 @@ type ProbeReport struct {
 // ValidateProbeJSON parses and enforces the probe.json invariants (PRB-1, spec §6.3).
 //
 // Rules enforced:
-// 1. Valid JSON with schema_version == 1.
-// 2. command is non-empty.
-// 3. files is non-empty; each entry is a non-empty, relative path inside the worktree
-//    (not absolute and not containing a ".." segment).
+//  1. Valid JSON with schema_version == 1.
+//  2. command is non-empty.
+//  3. files is non-empty; each entry is a non-empty, relative path inside the worktree
+//     (not absolute and not containing a ".." segment).
 func ValidateProbeJSON(data []byte) (*ProbeReport, error) {
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return nil, errors.New("probe: empty content")

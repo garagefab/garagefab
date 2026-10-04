@@ -4,9 +4,9 @@
 // ARCHITECTURAL ROLE:
 // Non-Functional Requirement Verification for the persistence layer.
 //
-//  - NFR-4: overview queries are bounded, so a large history cannot blow up a response.
-//  - NFR-6: a hard crash (kill -9) loses no committed state.
-//  - NFR-7: five concurrent job writers plus a parallel reader never see "database is locked".
+//   - NFR-4: overview queries are bounded, so a large history cannot blow up a response.
+//   - NFR-6: a hard crash (kill -9) loses no committed state.
+//   - NFR-7: five concurrent job writers plus a parallel reader never see "database is locked".
 //
 // ==============================================================================
 package store_test
