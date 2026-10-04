@@ -44,3 +44,17 @@ type IssueSource interface {
 type SchedulerNotifier interface {
 	Wake()
 }
+
+// LabelSpec defines the name, color hex code, and description for a GitHub label (GHB-2).
+type LabelSpec struct {
+	Name        string
+	Color       string
+	Description string
+}
+
+// IssueFeedback defines the outbound port for synchronizing issue status labels and comments (GHB-2, GHB-5).
+type IssueFeedback interface {
+	EnsureLabels(ctx context.Context, repo string, labels []LabelSpec) error
+	SetLabels(ctx context.Context, repo string, issueNum int, add, remove []string) error
+	Comment(ctx context.Context, repo string, issueNum int, body string) error
+}
