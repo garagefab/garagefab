@@ -15,6 +15,7 @@ Garagefab is a local-first AI software factory that orchestrates coding agents t
 | Specification | `PROJECT_DOCS/03_spec.md` | Observable behavior and acceptance criteria |
 | Plan | `PROJECT_DOCS/04_plan.md` | Milestones, task order, working agreement |
 | Milestone plans | `PROJECT_DOCS/milestones/*.md` | Per-milestone implementation details |
+| Agent guide | `PROJECT_DOCS/agent-guides/guided-e2e-walkthroughs.md` | How to run/author guided, pausable E2E walkthroughs |
 
 ## Build Commands
 
@@ -35,7 +36,7 @@ Prerequisites: Go 1.22+, Node 20+, git 2.30+, golangci-lint. Runtime only, for p
 - **Go style:** Standard Go conventions. Exported identifiers must have doc comments. Use `goimports` for formatting.
 - **Error handling:** Return errors with context (`fmt.Errorf("config: load: %w", err)`). Never swallow errors silently.
 - **Logging:** Use `log/slog` with structured fields. Include `job_id` and `step_id` where applicable.
-- **Testing:** Table-driven tests preferred. Test names should reference requirement IDs where applicable (e.g., `TestLockFile_SecondInstance_RCV5`).
+- **Testing:** Table-driven tests preferred. Test names should reference requirement IDs where applicable (e.g., `TestLockFile_SecondInstance_RCV5`). For guided, pausable E2E tours, follow `PROJECT_DOCS/agent-guides/guided-e2e-walkthroughs.md` and reuse the shared `pause`/`walkthrough*` helpers in `cmd/garagefab/walkthrough_test.go`.
 - **No CGO:** The binary must build with `CGO_ENABLED=0`. Never add a dependency that requires CGO.
 - **Comments:** Follow the Educational & Architecture-Aware Code Comments standard below. Preserve all existing comments and docstrings unrelated to your changes.
 
