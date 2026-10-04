@@ -1,8 +1,8 @@
 # SB — Spike B: GitHub
 
-> Status: **Draft (docs-only; experiments pending)**
-> Size: S · Depends on: —
-> Unblocks: M6, `architecture.md` §12, `spec.md` OQ-1 and OQ-14
+> Status: **Cancelled (superseded by D22/D23 — gh CLI, no Projects v2)**  
+> Size: S · Depends on: —  
+> Note: Cancelled per architectural change plan `PROJECT_DOCS/05_reviewd-change-plan-github-projects.md`. All GitHub operations are unified under the official `gh` CLI. Original GraphQL experiments are obsolete. Kept for historical reference.
 
 ## Goal
 

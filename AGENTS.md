@@ -27,7 +27,7 @@ make ui         # Build the React UI (cd ui && npm ci && npm run build)
 make ci         # lint + vet + test + build (full CI pipeline)
 ```
 
-Prerequisites: Go 1.22+, Node 20+, git 2.30+, golangci-lint.
+Prerequisites: Go 1.22+, Node 20+, git 2.30+, golangci-lint. Runtime only, for projects that set `github.repo`: GitHub CLI `gh` 2.x, authenticated (the exact minimum version is pinned during M6).
 
 ## Code Conventions
 
@@ -68,8 +68,8 @@ internal/
     command/              command runner + built-in guardrails
     worktree/             git worktree lifecycle
   store/                  db, migrations/, repositories
-  intake/                 poller: GitHub issues + intent-file scan → jobs
-  provider/github/        issues, Projects v2 mirror, PR creation
+  intake/                 poller: GitHub issues + intent-file scan → jobs; issue feedback reconciler
+  provider/github/        gh CLI adapter: issues, labels, comments, PR creation
   server/                 router, auth, API handlers, SSE hub, embed
   config/                 global + project config loading and validation
 ui/                       React SPA source (Vite + TypeScript + Tailwind + shadcn/ui)
@@ -77,11 +77,12 @@ ui/                       React SPA source (Vite + TypeScript + Tailwind + shadc
 
 **Import rules (enforced by CI):**
 
-1. `factory` defines interfaces it needs. It **must not** import `store`, `worker`, `provider`, or `server`. It never runs a binary and never contains SQL.
+1. `factory` defines interfaces it needs. It **must not** import `store`, `worker`, `provider`, `server`, or `intake`. It never runs a binary and never contains SQL.
 2. `store` owns all SQL, transactions, and migrations. **No other package** imports `database/sql`.
 3. `worker` owns process execution and git worktrees. It returns structured results and **must not** import `store`.
-4. `server` and `intake` are adapters: they call `factory` and read through `store`, but contain no pipeline logic.
+4. `server` and `intake` are adapters: they call `factory` and read and write through `store`, but contain no pipeline logic.
 5. `cmd/garagefab` is the only place that knows concrete types and wires everything together.
+6. `provider/github` runs the `gh` CLI and returns its own DTOs. It **must not** import `factory`, `store`, `server`, `worker`, or `intake`; `cmd/garagefab` adapts its types to the ports that need them.
 
 ## Adding Dependencies
 

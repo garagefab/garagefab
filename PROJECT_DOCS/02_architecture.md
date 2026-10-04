@@ -43,7 +43,7 @@ Derived from `intent.md`; each one has a concrete architectural consequence.
 | D6 | Artifacts in the Git worktree; operational state in SQLite; raw logs on disk | Preserves "Git is the audit trail" and keeps the DB small |
 | D7 | Job state = **stage** × **status** | Kanban follows stage, badges follow status |
 | D8 | One poller loop (30 s) for GitHub and intent files; **no fsnotify** | Fewer moving parts; avoids rename/partial-write/debounce edge cases |
-| D9 | GitHub via **Personal Access Token** and REST/GraphQL; no `gh` CLI dependency | Zero external tool requirement |
+| D9 | ~~GitHub via **Personal Access Token** and REST/GraphQL; no `gh` CLI dependency~~ **Superseded by D22** | ~~Zero external tool requirement~~ |
 | D10 | Global concurrency limit, default **5** running jobs, configurable; same-project parallelism allowed | Per `intent.md`: jobs run concurrently in isolated worktrees |
 | D11 | Crash recovery marks running jobs `interrupted`; the human retries | Never auto-resume a possibly half-applied change |
 | D12 | HTTP bound to `127.0.0.1`, API token required | Agents execute local commands; Approve must not be callable by any local process |
@@ -52,10 +52,12 @@ Derived from `intent.md`; each one has a concrete architectural consequence.
 | D15 | Phase 1 platforms: **macOS and Linux**. Windows is unsupported | Process-group handling and `sh -c` command steps; revisit later |
 | D16 | Factory Brain / FTS5 is **not** in Phase 1 | Deferred by `intent.md` |
 | D17 | Worktrees are created at a job's **first agent step** from the **latest remote base** (`git fetch`, then `origin/<base>`); configurable via `base_ref`; fetch failure falls back to the local base branch with a warning event | Agents work on current code and PRs conflict less; works offline; `intent.md` updated accordingly |
-| D18 | Both **classic** and **fine-grained** PATs are supported; the GitHub Project link is optional | Classic is the easiest path for solo developers on personal accounts; fine-grained cannot reach user-owned Projects |
+| D18 | ~~Both **classic** and **fine-grained** PATs are supported; the GitHub Project link is optional~~ **Superseded by D22 and D23** | ~~Classic is the easiest path for solo developers on personal accounts; fine-grained cannot reach user-owned Projects~~ |
 | D19 | Dashboard auth: one-time token URL → `HttpOnly` `SameSite=Strict` session cookie; skill and CLI use the bearer token | No friction after first open; JS never holds the token |
 | D20 | `gopkg.in/yaml.v3` for YAML parsing | Pure Go, standard YAML parser for global and project configuration files |
 | D21 | Agent CLI invocations: headless flags (`agy --print <prompt> --dangerously-skip-permissions --output-format json`, `opencode run --auto --format json <prompt>`), fresh session default, prompt via CLI args. Exit code 0 does not imply task success; adapters must inspect JSON status and verify artifacts/diff | Spike A findings (`PROJECT_DOCS/spikes/agent-clis.md`); agent CLIs exit 0 even on task-level failure |
+| D22 | All GitHub operations (issues, labels, comments, pull requests) use the **GitHub CLI `gh`** through `os/exec`, behind a `GHRunner` interface in `provider/github`. Authentication comes from `gh auth login` or `GH_TOKEN`/`GITHUB_TOKEN`; Garagefab stores, reads, and logs no GitHub token. `git push` stays on system `git` with the user's credentials (`gh auth setup-git` is recommended). `gh` is required only for projects that set `github.repo` | No token configuration, no HTTP/GraphQL client to maintain, structured `--json` output, same execution model as `git`. Replaces D9 |
+| D23 | **GitHub Projects v2 is not used.** Issue intake is triggered by an issue label (`github.intake_label`, default `garagefab`) plus exactly one `type:<work_type>` label. Stage feedback is written to the issue as one mutually exclusive `garagefab:*` state label plus comments, applied asynchronously by the poller | The dashboard already is the board; Projects v2 needs fragile GraphQL node IDs, broad classic tokens on personal accounts, and a manual board setup. Replaces the Project parts of D18. Spike B is cancelled |
 
 ## 4. System Overview
 
@@ -82,10 +84,12 @@ Derived from `intent.md`; each one has a concrete architectural consequence.
 └────────────────────────────────────────────────────────────────────┼──────────────┘
                                                                      │ os/exec
                          ┌───────────────────────────────────────────▼────────────┐
-                         │ agy · opencode · git · test/build/lint commands        │
+                         │ agy · opencode · git · gh · test/build/lint commands   │
                          │ running inside ~/.garagefab/worktrees/<project>/<job>  │
                          └────────────────────────────────────────────────────────┘
 ```
+
+`provider/github` runs `gh` through `os/exec` (D22). `intake` uses it for issue intake and issue feedback; `factory` reaches it only through the `PullRequestProvider` port, wired in `cmd/garagefab`.
 
 On disk:
 
@@ -115,7 +119,7 @@ On disk:
 | Config | YAML | Global file and per-project file |
 | Subprocesses | `os/exec` + `context` | Own process group per child |
 | Git | System `git` via `os/exec` | No libgit2 or pure-Go git |
-| GitHub | PAT + `net/http` | REST for issues/PRs; GraphQL for Projects v2 |
+| GitHub | GitHub CLI `gh` via `os/exec` | Issues, labels, comments, PRs; `--json` output; minimum version pinned in M6 (D22) |
 | UI | React 19, TypeScript, Vite, Tailwind CSS 4, shadcn/ui | Built to `ui/dist`, embedded with `//go:embed` |
 
 Rule: adding a dependency requires a decision-log entry. `CGO_ENABLED=0 go build ./...` must always pass.
@@ -131,8 +135,8 @@ internal/
     command/              command runner + built-in guardrails
     worktree/             git worktree lifecycle
   store/                  db, migrations/, repositories (jobs, steps, events, intake, processes)
-  intake/                 poller: GitHub issues + intent-file scan → jobs
-  provider/github/        issues, Projects v2 mirror, PR creation
+  intake/                 poller: GitHub issues + intent-file scan → jobs; issue feedback reconciler
+  provider/github/        gh CLI adapter: issues, labels, comments, PR creation
   server/                 router, auth, api_*, sse hub, embed
   config/                 global + project config loading and validation
 ui/                       SPA source
@@ -140,11 +144,12 @@ ui/                       SPA source
 
 **Dependency rules (enforced by review, ideally by an import-lint check in CI):**
 
-1. `factory` defines the interfaces it needs (`Store`, `AgentRunner`, `CommandRunner`, `WorktreeManager`, `IssueProvider`). It imports none of `store`, `worker`, `provider`, or `server`. It never runs a binary and never contains SQL.
+1. `factory` defines the interfaces it needs (`Store`, `AgentRunner`, `CommandRunner`, `WorktreeManager`, `PullRequestProvider`). It imports none of `store`, `worker`, `provider`, `server`, or `intake`. It never runs a binary and never contains SQL.
 2. `store` owns all SQL, transactions, and migrations. Nothing else imports `database/sql`.
 3. `worker` owns process execution and git worktrees. It returns structured results and never touches `store`.
-4. `server` and `intake` are adapters: they call `factory` (and read through `store`) but contain no pipeline logic.
+4. `server` and `intake` are adapters: they call `factory` (and read and write through `store`) but contain no pipeline logic. `intake` declares its own narrow GitHub interfaces (`IssueSource`, `IssueFeedback`).
 5. `cmd/garagefab` is the only place that knows concrete types.
+6. `provider/github` runs the `gh` CLI and returns its own DTOs. It imports none of `factory`, `store`, `server`, `worker`, or `intake`; `cmd/garagefab` adapts its types to the `factory` and `intake` ports.
 
 ## 7. Source of Truth
 
@@ -153,8 +158,8 @@ ui/                       SPA source
 | Intent text, `spec.md`, clarification Q&A, review report, evidence summary, human rejection notes | **Git worktree**, `.garagefab/jobs/<id>/`, committed on the job branch and included in the PR | Human-readable, reviewable, permanent |
 | Job, step runs, approvals, events, process records, poller bookkeeping | **SQLite** | Fast queries, state transitions, dashboard |
 | Raw stdout/stderr | **Files** in `~/.garagefab/logs/`, path stored in DB | Large, append-heavy; keeps the DB small and DBeaver-friendly |
-| Global settings, GitHub token reference | `~/.garagefab/config.yaml` | |
-| Commands, guardrails, agent selection per project | `<repo>/.garagefab/project.yaml` | Versioned with the code |
+| Global settings | `~/.garagefab/config.yaml` | |
+| Commands, guardrails, agent selection, GitHub repository settings per project | `<repo>/.garagefab/project.yaml` | Versioned with the code |
 
 If the DB and an artifact disagree, the artifact wins for content; the DB wins for current state.
 
@@ -168,7 +173,9 @@ If the DB and an artifact disagree, the artifact wins for content; the DB wins f
 - **Event**: autoincrement id, job, type, JSON payload, time. Source for the dashboard feed and SSE.
 - **Approval**: job, gate (`spec_review|final`), decision, note, time.
 - **ProcessRecord**: step run, pid, pgid, process start time, state. Used for crash recovery.
-- **IntakeSeen**: source, external id or file path, content hash. Prevents duplicate jobs.
+- **IntakeSeen**: project, source, external ref (`owner/repo#<n>` or intent-file path), content hash (informational only), created job. Unique per (project, source, ref), so it prevents duplicate jobs even when content changes (`spec.md` INT-4).
+- **IntakeError**: project, source, ref, message, updated time. One row per failing item or provider; cleared when resolved. Shown on the Overview.
+- **GitHubFeedback**: job, last applied feedback state. Lets the poller apply issue labels and comments idempotently (D23).
 - **Session**: dashboard login session id, created/expires. Invalidated when the API token is rotated.
 
 ### 8.2 Stage × Status
@@ -203,8 +210,10 @@ If the DB and an artifact disagree, the artifact wins for content; the DB wins f
 | 04 / `running` | Blocked, or retries exhausted | 04 / `failed` |
 | 05 / `running` | review report produced | 06 / `awaiting_approval` |
 | 06 / `awaiting_approval` | human rejects (with note) | 04 / `queued` |
-| 06 / `awaiting_approval` | human approves | 07 / `running` (push + PR) |
-| 07 / `running` | PR created, worktree cleaned | 07 / `done` |
+| 06 / `awaiting_approval` | human approves | 07 / `queued` |
+| 07 / `queued` | slot available | 07 / `running` (delivery step: push + PR) |
+| 07 / `running` | PR created or reused, worktree cleaned | 07 / `done` |
+| 07 / `running` | delivery fails (Blocked) | 07 / `failed` (worktree kept; Retry re-runs delivery) |
 
 > Other profiles follow the same transitions for their active stages; skipped stages are simply absent. Profile-specific differences: `bug_fix` adds stage 03 (probe) between 02 and 04; `refactor` starts at 04 (no 02/03); `docs` goes from 05 directly to 07 unless the review decision is `request_changes`, in which case it routes through 06 (see `spec.md` REV-6).
 
@@ -326,34 +335,30 @@ Runs `sh -c <command>` in the worktree with timeout, own process group, streamed
 ### 12.1 Single poller (every 30 s, configurable)
 One loop, per registered project:
 
-1. **GitHub issues** (only for projects with a configured GitHub Project): query the linked GitHub Project for items with `Status=01_Intent` and read their `Type` field (GraphQL, Projects v2), resolve the issue, and create a job if the item is not in `IntakeSeen`.
-2. **Intent files:** scan `<repo>/.garagefab/intents/*-intent.md` in the project's main checkout. A file creates a job if its path+content hash is not in `IntakeSeen`. Garagefab only reads these files; it never edits or moves them.
-3. **Status mirror:** push pending stage changes to the GitHub Project board (`01_Intent` … `07_Done`). Skipped for projects without a configured GitHub Project.
+1. **GitHub issues** (only for projects with `github.repo`): list open issues carrying `github.intake_label` (default `garagefab`) with `gh issue list --json`. The work type comes from exactly one `type:<bug_fix|feature|refactor|docs>` label. **A missing, unknown, or duplicate `type:` label creates no job and records an intake error; the issue is not marked seen, so fixing its labels creates the job on a later cycle.** A valid issue creates a job if `owner/repo#<n>` is not in `IntakeSeen`.
+2. **Intent files:** scan `<repo>/.garagefab/intents/*-intent.md` in the project's main checkout. A file creates a job if its path is not in `IntakeSeen` (the content hash is stored for information only). Garagefab only reads these files; it never edits or moves them.
+3. **Issue feedback reconcile** (D23): for each issue-sourced job whose (stage, status) maps to a feedback state different from the last applied one (`GitHubFeedback`), set exactly one `garagefab:*` state label on the issue (removing the others) and post a comment where the state needs human attention or is terminal. Required labels are created idempotently (`gh label create --force`). Feedback runs here, asynchronously, so a slow or failing `gh` call never blocks the scheduler or a store transaction; it never changes job state. Skipped for projects without `github.repo`.
 
-Dashboard-created jobs go straight to the factory. Poller errors are logged and surfaced on the Overview page; they never crash the service.
+Dashboard-created jobs go straight to the factory. Poller errors are logged and surfaced on the Overview page (`IntakeError`); they never crash the service.
 
 ### 12.2 Publishing
-Push uses the user's own git credentials via system `git`. Pull request creation and Project updates use the PAT. Pushing and PR creation happen only after the Final Approval gate.
+Delivery is a scheduled step in stage 07, after the Final Approval gate:
 
-### 12.3 Tokens
+1. Push the job branch with system `git` and the user's own git credentials (`gh auth setup-git` is recommended). The remote is the remote part of `base_ref` (`origin/main` → `origin`); for a local `base_ref` (e.g. `main`) it is `origin`.
+2. Look for a PR for the branch with `gh pr list --head <branch> --state all`. An open PR is reused. A merged or closed PR fails delivery as Blocked; Garagefab never opens a duplicate.
+3. Otherwise create the PR with `gh pr create --body-file -`.
+4. Any failure (no `github.repo`, `gh` missing or not authenticated, push rejected, network) is Blocked: `07/failed`, worktree kept, Retry re-runs the whole delivery idempotently.
 
-Two token types are supported, so the simplest path works for each kind of user:
+`git push` runs in `worker/worktree`; PR calls run in `provider/github`. The factory only orchestrates through ports.
 
-| Setup | Token | Permissions |
-|-------|-------|-------------|
-| Personal account (repo and Project) | **Classic PAT** | `repo`, `project` |
-| Organization (repo and Project) | **Fine-grained PAT** (recommended) | Repository: Issues read/write, Pull requests read/write, Metadata read. Organization: Projects read/write |
-| Any account, no GitHub Project | Fine-grained or classic | Issues and Pull requests only |
+### 12.3 Authentication
 
-Notes:
-
-- GitHub's fine-grained tokens cannot access **user-owned** Projects, so on a personal account the Project features require a classic token.
-- Classic `repo` is broad (all repositories the user can access). Documentation must say so and recommend fine-grained tokens for organizations.
-- Without a configured GitHub Project, GitHub-issue intake and the board mirror are disabled for that project (the `Status=01_Intent` trigger lives in the Project). PR creation, intent files, and dashboard entry still work.
-- Pushing uses the user's git credentials, so no `Contents: write` permission is requested for the token.
-- Exact fine-grained permission names are verified against GitHub's documentation when the provider is implemented.
-
-Storage: read from the environment variable named in `config.yaml` (default `GARAGEFAB_GITHUB_TOKEN`), or from the config file with `0600` permissions enforced. It is never logged and never passed to agent subprocesses (agents get an explicit allow-listed environment).
+- Garagefab never reads, stores, or logs a GitHub token. `gh` uses its own login (`gh auth login`, OS keyring) or `GH_TOKEN` / `GITHUB_TOKEN` from Garagefab's environment.
+- The `gh` subprocess inherits Garagefab's environment (it needs `HOME` and keyring access), plus `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1`, and `NO_COLOR=1`.
+- Agent and command subprocesses get the allow-listed environment (`spec.md` SEC-6). `GH_TOKEN` and `GITHUB_TOKEN` are not on it and are refused in `engine.env_passthrough`.
+- Agents run on the same machine and could call `gh` themselves with the user's login. This is covered by the existing Phase 1 scope limit (no agent sandboxing, `spec.md` §9).
+- Startup: if any registered project sets `github.repo`, Garagefab checks `gh --version` against the pinned minimum and runs `gh auth status`. A failure is a **warning plus an Overview provider error, not a fatal exit**, so one project's GitHub setup cannot stop local-only work.
+- Without `github.repo`, GitHub intake and feedback are disabled for that project; intent files and dashboard entry still work, and delivery fails as Blocked with a message naming the missing setting.
 
 ## 13. Human Interaction and the Skill
 
@@ -377,9 +382,9 @@ engine:
   poll_interval: 30s
   step_timeouts: { agent: 30m, command: 10m }
   env_passthrough: []           # extra env var names passed to agents (allow-list)
-github:
-  token_env: GARAGEFAB_GITHUB_TOKEN
 ```
+
+There is no global `github` section: `gh` owns GitHub authentication (§12.3).
 
 Per project `<repo>/.garagefab/project.yaml`:
 
@@ -396,9 +401,9 @@ commands:
   lint:  ["golangci-lint run"]
 guardrails:
   protected_paths: ["**/*_test.go"]   # existing matching files cannot be modified; new files are allowed
-github:
+github:                          # optional; enables GitHub intake, issue feedback, and delivery
   repo: owner/name
-  project_number: 3             # optional; enables issue intake and board mirror
+  intake_label: garagefab        # issues with this label are picked up
   pr_issue_keyword: closes      # closes | refs
 max_concurrent_jobs: 3           # optional, lower than the global limit
 ```
@@ -440,7 +445,7 @@ An **orphan agent** is a child process still running after Garagefab died. On ev
 
 - **Threat model:** a local, single-user tool whose agents execute arbitrary commands with the user's privileges. Garagefab does not sandbox agents in Phase 1 (security sandboxes are Phase 2). Users must only register repositories they trust.
 - Loopback binding + API token + Host check protect the control plane.
-- Agents receive an allow-listed environment; the GitHub token and API token are not included.
+- Agents receive an allow-listed environment; `GH_TOKEN`, `GITHUB_TOKEN`, and the API token are not included.
 - Agent processes run in the job worktree; the base repo checkout is never their working directory.
 - Guardrails and the human gates are the safety net against unintended changes; Garagefab never merges.
 
@@ -456,7 +461,8 @@ An **orphan agent** is a child process still running after Garagefab died. On ev
 - **Store tests:** real SQLite on a temp directory, migrations applied for real.
 - **Worker tests:** a **fake agent** (a tiny test binary or script) that can succeed, write bad artifacts, hang, ignore SIGTERM, crash, or spawn children. This exercises timeouts, process groups, and orphan handling without real LLMs.
 - **Engine tests:** fake `AgentRunner` and fake `CommandRunner`; assert state transitions and events.
-- **End-to-end:** the two MVP scenarios from `intent.md` against a temp git repo, a fake agent, and a fake GitHub server.
+- **Provider tests:** `provider/github` unit and integration tests run against a thread-safe `FakeGHRunner` with zero network access.
+- **End-to-end:** the two MVP scenarios from `intent.md` against a temp git repo, a fake agent, and `FakeGHRunner`.
 - CI runs `CGO_ENABLED=0 go build ./...`, `go vet`, `go test ./...`, the UI build, and the import-boundary check.
 
 ## 21. Build and Distribution

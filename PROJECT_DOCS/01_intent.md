@@ -59,7 +59,7 @@ During the spec phase, the following deployment architecture should be evaluated
 
 ### Pipeline Stages
 
-Jobs progress through the following stages, tracked in both garagefab's internal state and mirrored to GitHub Projects:
+Jobs progress through the following stages, tracked in garagefab's internal state and, for issue-sourced jobs, reflected on the GitHub issue as labels and comments:
 
 | Stage | Type | Description |
 |-------|------|-------------|
@@ -158,7 +158,7 @@ No extra data collection is needed — this is a presentation layer over artifac
 Jobs can enter the pipeline through multiple channels:
 
 1. **Intent File** — A file following the naming convention `*-intent.md`, created in a designated project directory, triggers the pipeline automatically.
-2. **GitHub Issue** — Creating a GitHub Issue with `Status=01_Intent` in the linked GitHub Project triggers the pipeline.
+2. **GitHub Issue** — Opening a GitHub Issue with the `garagefab` label and a `type:<work_type>` label (e.g. `type:feature`) triggers the pipeline. An issue without a valid `type:` label creates no job and shows an intake error.
 3. **Dashboard** — The user creates a new job directly from the web UI, selecting the project and work type.
 
 All three entry points are first-class citizens — any of them can initiate a full pipeline run.
@@ -262,9 +262,10 @@ Jobs from different projects run independently and do not interfere with each ot
 ## GitHub Integration
 
 ### Phase 1
-- **GitHub Issues** as a job entry point (issue with `Status=01_Intent` triggers pipeline).
-- **GitHub Projects** for external visibility (job status mirrored to project board columns: `01_Intent` through `07_Done`).
+- **GitHub Issues** as a job entry point (an open issue with the `garagefab` label and a `type:<work_type>` label triggers the pipeline).
+- **Issue feedback** for external visibility: the issue carries one `garagefab:*` state label (e.g. `garagefab:in-progress`, `garagefab:needs-approval`) and receives comments when human attention is needed or the job ends.
 - **Pull Requests** created automatically at the `07_Done` stage.
+- All GitHub operations use the GitHub CLI (`gh`) and the developer's existing `gh` login. GitHub Projects is not used.
 
 ### Phase 2
 - Extensible issue tracker interface (JIRA, GitLab Issues, etc.).
@@ -274,7 +275,7 @@ Jobs from different projects run independently and do not interfere with each ot
 The MVP is considered successful when the following two scenarios work end-to-end:
 
 ### Scenario 1: Happy Path (Automated Flow with Spec Review)
-> The user creates a GitHub Issue with `Status=01_Intent` (type: feature) for a registered project. Garagefab detects it and runs the pipeline:
+> The user creates a GitHub Issue with the labels `garagefab` and `type:feature` for a registered project. Garagefab detects it and runs the pipeline:
 > - Spec agent produces a draft `spec.md` (design + implementation plan)
 > - User reviews and approves the spec in the dashboard (or refines it via coding agent)
 > - Coding agent implements the approved spec in an isolated worktree
@@ -292,7 +293,7 @@ The MVP is considered successful when the following two scenarios work end-to-en
 
 ## Constraints
 
-- **Local-first**: Phase 1 runs entirely on the developer's local machine. No cloud services required (except GitHub for issues/PRs/projects).
+- **Local-first**: Phase 1 runs entirely on the developer's local machine. No cloud services required (except GitHub for issues and PRs).
 - **Single binary**: The entire application (orchestrator, dashboard, database) ships as one executable.
 - **Zero external dependencies**: No external databases, message queues, or services beyond what the binary provides (embedded DB, embedded web server).
 - **Code quality**: Code should be clean and well-documented.

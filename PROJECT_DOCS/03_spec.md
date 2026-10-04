@@ -48,11 +48,11 @@ Garagefab is a local, single-binary AI software factory. A developer registers l
 
 ## 3. Actors and Key Flows
 
-**Actors:** the **Developer** (the only human), **Garagefab**, **Agent CLIs** (`agy`, `opencode`), **GitHub** (issues, Projects, pull requests).
+**Actors:** the **Developer** (the only human), **Garagefab**, **Agent CLIs** (`agy`, `opencode`), **GitHub** (issues, pull requests).
 
 ### F1. Happy path (Feature, from a GitHub issue)
 
-1. Developer creates an issue and sets `Status=01_Intent`, `Type=feature` in the linked GitHub Project.
+1. Developer creates an issue with labels `garagefab` and `type:feature`.
 2. Poller creates a job (`01_Intent`/`queued`). A slot frees; the worktree is created; the spec agent runs (`02`/`running`).
 3. Spec agent finds the intent actionable and writes a draft job spec → `02`/`spec_review`.
 4. Developer approves in the dashboard → `04`/`queued` → `running`.
@@ -93,7 +93,7 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 | PRJ-1 | M | The developer can register a project in the dashboard by giving a repository path. | Given a path to a Git repository, when "Add Project" is submitted, then the project appears in the project list with name (default: directory name), path, and enabled work types. |
 | PRJ-2 | M | Registration validates the repository. | Given a path that does not exist, is not a Git repository, or whose `base_ref` cannot be resolved locally, when submitted, then it is rejected with a message naming the failed check and nothing is stored. |
 | PRJ-3 | M | Registration reads `<repo>/.garagefab/project.yaml`. | Given the file is missing, when submitted, then registration is rejected and the response includes a template. |
-| PRJ-4 | M | `project.yaml` is validated; errors name the file and key. | Given `agents.coding: foo`, then the error is `project.yaml: agents.coding: unknown agent "foo" (supported: agy, opencode)`. |
+| PRJ-4 | M | `project.yaml` is validated; errors name the file and key. `github.repo` must match `owner/name`; `github.pr_issue_keyword` must be `closes` or `refs`. A missing or unauthenticated `gh` binary is reported as a warning/intake error, not a project registration rejection. | Given `agents.coding: foo`, then the error is `project.yaml: agents.coding: unknown agent "foo" (supported: agy, opencode)`. Given `github.repo: invalid`, then the error names the key. |
 | PRJ-5 | M | Project name and repository path are unique. | Given a second registration with the same path or name, then it is rejected. |
 | PRJ-6 | M | A job uses a snapshot of the project configuration taken when the job is created (read from the main checkout). | Given `project.yaml` is edited while job 7 runs, then job 7 keeps its snapshot and jobs created afterwards use the new file. |
 | PRJ-7 | S | The dashboard can create `project.yaml` from the template. | Given no file, when "Create template" is clicked, then the template is written to the main checkout and the form re-validates. |
@@ -105,9 +105,9 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 |----|-----|-------------|---------------------|
 | INT-1 | M | **Dashboard entry:** the developer creates a job with project, work type, title, and intent text. | Given valid input, when submitted, then a job exists at `01_Intent`/`queued` and the intent text is stored; it is written to `.garagefab/jobs/<id>/intent.md` when the worktree is created. |
 | INT-2 | M | **Intent-file entry:** each poll scans `<repo>/.garagefab/intents/*-intent.md` (`intents_dir` configurable). The file has YAML front matter with `type` (`bug_fix\|feature\|refactor\|docs`) and optional `title`; the body is the intent. Without `title`, the first `# ` heading, then the file name, is used. | Given a new valid file, when the next poll runs, then exactly one job is created. Given a missing or invalid `type`, then no job is created and an intake error naming the file appears on the Overview. |
-| INT-3 | M | **GitHub entry:** each poll reads items of the linked GitHub Project. An item with `Status=01_Intent` and a `Type` field value creates a job from the linked issue (title and body). See OQ-1. | Given a new item with `Status=01_Intent` and `Type=feature`, when the next poll runs, then one job is created and linked to the issue. Given a missing `Type`, then no job is created and an intake error is shown. |
-| INT-4 | M | Intake is idempotent. At most one job is created per intent file path and per GitHub issue. | Given the same file or issue is seen again (even if its content changed), then no second job is created and a log event notes it. |
-| INT-5 | M | Intake problems never stop the service and are visible. | Given GitHub returns 401, rate-limit, or network errors, then the poller records an intake error on the Overview, keeps running, and retries on the next cycle. |
+| INT-3 | M | **GitHub entry:** each poll lists open issues carrying `github.intake_label` (default `garagefab`) via `gh issue list --json`. An issue with exactly one valid `type:<bug_fix\|feature\|refactor\|docs>` label creates a job from its title and body; `source=github_issue`, `source_ref=owner/repo#<n>`. **Missing, unknown, or multiple `type:` labels → no job, and an intake error naming the issue appears on the Overview. The issue is not marked seen, so fixing the labels creates the job on a later cycle.** | Given a new issue with `garagefab` and `type:feature`, when the next poll runs, then one job is created and linked to `owner/repo#<n>`. Given missing or multiple `type:` labels, then no job is created and an intake error is shown. |
+| INT-4 | M | Intake is idempotent. At most one job is created per intent file path and per GitHub issue reference (`owner/repo#<n>`). | Given the same file path or issue ref is seen again (even if its content changed), then no second job is created and a log event notes it. |
+| INT-5 | M | Intake problems never stop the service and are visible. | Given `gh` is missing, not authenticated, rate-limited, or network fails, then the poller records an intake error on the Overview, keeps running, and retries on the next cycle. |
 | INT-6 | M | One poller loop (default every 30 s, configurable) serves GitHub and intent files for all projects. | Given two projects, then both are scanned in each cycle; a cycle never overlaps the previous one. |
 | INT-7 | S | A newly created job is visible in the dashboard within one cycle plus one second. | Given a new intent file, then the board shows the card at most `poll_interval + 1 s` later. |
 
@@ -207,12 +207,12 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 
 | ID | Pri | Requirement | Acceptance criteria |
 |----|-----|-------------|---------------------|
-| DLV-1 | M | After approval, the system pushes `garagefab/job-<id>` to the remote named in `base_ref` and opens a PR against the base branch. Title = job title; body = summary, evidence summary, and links to artifacts; issue-sourced jobs add `<keyword> #<n>` where the keyword is `github.pr_issue_keyword` (`closes` by default, or `refs`). | Given an approved job, then a PR exists with that title and body and the job stores its URL. Given an issue-sourced job with the default setting, then the body contains `Closes #<n>`; with `refs`, it contains `Refs #<n>`. |
-| DLV-2 | M | Delivery is idempotent. If a PR already exists for the branch, it is reused. | Given Retry after a failure between push and PR creation, then exactly one PR exists. |
-| DLV-3 | M | Delivery failures (auth, network, missing repo or token configuration) are categorized Blocked → `07`/`failed` with a clear message. | Given an invalid token, then the job is `failed` and the message says the token was rejected. |
-| DLV-4 | M | On success the worktree is removed, the local branch is kept, the status becomes `done`, and the project board mirror is updated. | Given a delivered job, then the worktree path no longer exists and the PR link is shown. |
+| DLV-1 | M | After approval, the system pushes `garagefab/job-<id>` to the remote named in `base_ref` (for a local `base_ref` such as `main`, it pushes to `origin`, P2) and opens a PR against the base branch using `gh pr create --body-file -`. Title = job title; body = summary, evidence summary, and links to artifacts; issue-sourced jobs add `<keyword> #<n>` where the keyword is `github.pr_issue_keyword` (`closes` by default, or `refs`). Push uses system `git` with the user's git credentials (`gh auth setup-git` is recommended). | Given an approved job, then a PR exists with that title and body and the job stores its URL. Given an issue-sourced job with the default setting, then the body contains `Closes #<n>`; with `refs`, it contains `Refs #<n>`. |
+| DLV-2 | M | Delivery is idempotent. PR detection queries `gh pr list --head <branch> --state all`. An existing **open** PR is reused. A merged or closed PR fails delivery as `Blocked` (never open duplicate PRs). | Given Retry after a failure between push and PR creation, then exactly one PR exists. Given a closed PR, Retry fails Blocked. |
+| DLV-3 | M | Delivery failures (`gh` missing, unauthenticated, rate limit, push rejected, network error) are categorized Blocked → `07`/`failed` with a clear message. Worktree is kept for retry. | Given `gh` auth failure or network down, then the job is `failed` and the message explains the cause. |
+| DLV-4 | M | On success the worktree is removed, the local branch is kept, the status becomes `done`, and the issue (if any) gets label `garagefab:delivered` plus a PR link comment (best effort, GHB-5). | Given a delivered job, then the worktree path no longer exists, the PR link is shown, and the issue feedback is recorded. |
 | DLV-5 | M | The system never merges. | Given any job state, then no code path calls a merge API. |
-| DLV-6 | M | Jobs of projects without `github.repo` or a token cannot deliver; the failure message tells the developer what to configure. | See DLV-3; see OQ-11. |
+| DLV-6 | M | Jobs of projects without `github.repo` or when `gh` is not available/authenticated cannot deliver; the failure message tells the developer what to configure. | See DLV-3; see OQ-11. |
 
 ### 4.11 Worktrees (WKT)
 
@@ -252,11 +252,11 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 
 | ID | Pri | Requirement | Acceptance criteria |
 |----|-----|-------------|---------------------|
-| GHB-1 | M | GitHub access uses a PAT from the configured environment variable (or the config file with `0600` permissions). | Given a config file with broader permissions, then startup warns and refuses to read the token from it. |
-| GHB-2 | M | With a configured Project (`github.project_number`), stage changes are mirrored to the Project's status field (`01_Intent` … `07_Done`) within one poll cycle. | Given a job moving to `04_Coding`, then the Project item shows that status after the next cycle. |
-| GHB-3 | M | Without a configured Project, GitHub-issue intake and the board mirror are disabled for that project; PR creation still works. | Given no `project_number`, then the poller skips GitHub intake for that project without an error. |
-| GHB-4 | M | The token is never logged and is not passed to agent subprocesses. | Given a full run, then the token string appears in no log file and not in the agents' environment. |
-| GHB-5 | S | A mirror failure never changes job state; it appears as an intake/provider error. | Given the mirror call fails, then the job continues. |
+| GHB-1 | M | GitHub access uses the GitHub CLI (`gh`) and its own authentication (`gh auth login`, `GH_TOKEN`, or `GITHUB_TOKEN`). Garagefab stores no GitHub token. | Given a running system, no GitHub token is stored in `config.yaml` or SQLite. |
+| GHB-2 | M | For issue-sourced jobs, within one poll cycle of a (stage, status) change, the issue carries exactly one `garagefab:*` state label for that state (`architecture.md` §12.1), and comments are posted for states requiring human attention or upon completion. State labels are created idempotently via `gh label create --force`. | Given a job moving to `04_Coding`/`running`, then the issue shows `garagefab:in-progress` after the next cycle. |
+| GHB-3 | M | Without `github.repo`, GitHub intake and feedback are skipped for that project without an error. Intent files and dashboard jobs still work. | Given no `github.repo`, then the poller skips GitHub intake and feedback for that project without an error. |
+| GHB-4 | M | `GH_TOKEN` and `GITHUB_TOKEN` are never logged, never passed to agent subprocesses, and refused in `env_passthrough`. | Given a full run, then no token string appears in log files and not in the agents' environment. |
+| GHB-5 | S | A feedback (label or comment) failure never changes job state; it appears as an intake/provider error and is retried next cycle. | Given a `gh issue edit` or `comment` failure, then the job continues unaffected. |
 
 ### 4.15 Human Handoff and the Skill (HND)
 
@@ -292,7 +292,7 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 | LOG-3 | M | All produced artifacts are stored under `.garagefab/jobs/<id>/` and linked from the job. | Given a delivered job, then spec, review, probe (if any), evidence, clarification, and rejection files are in the PR. |
 | LOG-4 | M | State changes, approvals, intake errors, and warnings are recorded as events (§6.6) with increasing ids. | Given a job lifecycle, then events can reconstruct the transition history. |
 | LOG-5 | M | Logs are not shown by default; they are fetched on demand. | Given the job page, then no log request is made until the viewer is opened. |
-| LOG-6 | S | The configured GitHub token is masked if it appears in captured output. | Given an agent that prints the token, then the stored line shows `***`. |
+| LOG-6 | S | If `GH_TOKEN` or `GITHUB_TOKEN` is set in Garagefab's environment, its value is masked if it appears in captured output. | Given an agent or command that prints the token, then the stored line shows `***`. |
 
 ### 4.18 CLI and Installation (CLI)
 
@@ -304,7 +304,7 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 | CLI-4 | M | `garagefab status` prints running jobs and attention items by reading the database. It works while the service runs. | Given a running job, then it is listed with stage and status. |
 | CLI-5 | M | `garagefab version` prints version, commit, and build date. | |
 | CLI-6 | M | First start creates the data directory (`0700`), `config.yaml` (`0600`) with a generated API token, the database, and applies migrations. | Given an empty home, then all exist after start. |
-| CLI-7 | M | Startup checks: `git` available at a supported version, port free, database schema not newer than the binary. Failures exit non-zero with one clear message. | Given a newer schema, then the process refuses to start. |
+| CLI-7 | M | Startup checks: `git` available at a supported version, port free, database schema not newer than the binary. If any project sets `github.repo`, checks `gh --version` (minimum version) and `gh auth status` (failure emits a startup warning and Overview provider error, not a fatal exit; P1). Failures of hard requirements exit non-zero with one clear message. | Given a newer schema, then the process refuses to start. Given missing `gh`, the process warns and starts. |
 | CLI-9 | S | The README explains how to keep Garagefab running with tmux, launchd, and systemd and ships an example launchd plist and systemd unit (OQ-6). | Given the README, then each of the three setups has copy-paste instructions that were tested on macOS and Linux. |
 | CLI-8 | S | `garagefab token rotate` generates a new API token and invalidates all sessions (the skill reads the new token from the config). | Given a rotation, then old cookies and old bearer tokens are rejected. |
 
@@ -317,7 +317,7 @@ Garagefab stops while a job runs. On the next start the job is `interrupted`; th
 | SEC-3 | M | All `/api` routes require a valid session cookie or bearer token, except `GET /api/health` and `POST /api/session`. | Given no credentials, then `401`. |
 | SEC-4 | M | Approve and Reject require a session cookie. A valid bearer token alone is refused with `403`. | See APR-7. |
 | SEC-5 | M | Cookie-authenticated state-changing requests must carry an `Origin` equal to the server's origin. | Given a cross-origin POST with a valid cookie, then `403`. |
-| SEC-6 | M | Agent and command subprocesses receive an allow-listed environment: `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TERM`, `SHELL`, `TMPDIR`, plus names listed in `engine.env_passthrough` (OQ-12). | Given `GARAGEFAB_GITHUB_TOKEN` and the API token set in Garagefab's own environment, then neither is visible to an agent. |
+| SEC-6 | M | Agent and command subprocesses receive an allow-listed environment: `PATH`, `HOME`, `USER`, `LANG`, `LC_*`, `TERM`, `SHELL`, `TMPDIR`, plus names listed in `engine.env_passthrough` (OQ-12). | Given `GH_TOKEN`, `GITHUB_TOKEN`, and the API token set in Garagefab's own environment, none is visible to an agent. |
 | SEC-7 | M | Data directory is `0700`; `config.yaml` is `0600`; the database and logs are not world-readable. | Given a permissive mode, then startup warns. |
 | SEC-8 | M | Artifact and log endpoints serve only names from a fixed allow-list or ids from the database; no client-supplied path is joined to the filesystem. | Given `../../etc/passwd` as an artifact name, then `404`. |
 
@@ -426,9 +426,8 @@ Rules: `command` and `files` non-empty; `files` are relative paths inside the wo
 | `guardrails.protected_paths` | list of globs | empty | GRD-1 |
 | `guardrails.test_paths` | list of globs | empty | GRD-5 |
 | `guardrails.commands` | list of strings | empty | GRD-3 |
-| `github.repo` | `owner/name` | none | Needed for delivery |
-| `github.project_number` | int | none | Enables issue intake and board mirror |
-| `github.status_field`, `github.type_field` | string | `Status`, `Type` | Project field names |
+| `github.repo` | `owner/name` | none | Needed for GitHub intake, feedback, and delivery |
+| `github.intake_label` | string | `garagefab` | Issues with this label are picked up by intake (P3) |
 | `github.pr_issue_keyword` | `closes` \| `refs` | `closes` | Keyword placed before the issue number in PR bodies (OQ-14) |
 | `intents_dir` | path | `.garagefab/intents` | Relative to the repo |
 | `limits.max_concurrent_jobs` | int | none | ≤ global limit |
@@ -446,8 +445,6 @@ Rules: `command` and `files` non-empty; `files` are relative paths inside the wo
 | `engine.poll_interval` | `30s` | |
 | `engine.step_timeouts` | `agent: 30m`, `command: 10m` | |
 | `engine.env_passthrough` | `[]` | Extra environment variable names for agents |
-| `github.token_env` | `GARAGEFAB_GITHUB_TOKEN` | |
-| `github.token` | none | Only honored if the file is `0600` |
 
 ### 6.6 Enumerations
 
@@ -557,7 +554,9 @@ Heartbeat comment every 15 s. Reconnecting with `Last-Event-ID` resumes from the
 | No `commands.*` configured | Groups skipped; evidence warns |
 | Project path moved or deleted | Project flagged unavailable; poller skips it; its jobs fail Blocked at the next step |
 | Poller cycle takes longer than the interval | Next cycle waits; cycles never overlap |
-| GitHub rate limit or 401 | Provider error on the Overview; jobs unaffected; retried next cycle |
+| `gh` failure (missing, unauthenticated, rate limit) | Provider error on the Overview; jobs unaffected; retried next cycle |
+| State label missing on GitHub repository | Created idempotently with `gh label create <name> --force` |
+| PR already exists for job branch | If open: reused (DLV-2); if merged or closed: fails Blocked (never open duplicate PR) |
 | Intent file malformed or has invalid `type` | Intake error shown; no job |
 | Intent file edited after its job exists | Ignored; a log event notes it |
 | Two browser tabs click Approve | Second gets `409` |
@@ -576,13 +575,13 @@ Team features and multi-user auth · Windows · agent sandboxing or network filt
 
 ## 10. Acceptance Scenarios
 
-Scenarios 1 and 2 are the **MVP success criteria** from `intent.md`. Scenarios 3–6 are release checks for pipeline safety. All run in CI with a fake agent, a temporary Git repository, and a fake GitHub server.
+Scenarios 1 and 2 are the **MVP success criteria** from `intent.md`. Scenarios 3–6 are release checks for pipeline safety. All run in CI with a fake agent, a temporary Git repository, and `FakeGHRunner` (no network access).
 
 **Scenario 1 — Happy path (feature).** *Covers INT-3, SPC-1/4/5/6, COD-1/2/9, REV-1/2/5, APR-1/2/4/5, DLV-1/4, GHB-2.*
-Given a registered project and an issue with `Status=01_Intent`, `Type=feature` → a job is created; the draft job spec appears in `spec_review`; Approve → coding runs, commands pass; review writes `review.json`; the job is `awaiting_approval` with a complete evidence summary; Approve → a PR exists, the worktree is gone, the job is `done`, and the Project item reads `07_Done`. Human actions: create issue, approve spec, approve at the gate.
+Given a registered project and an issue with labels `garagefab` and `type:feature` → a job is created; the draft job spec appears in `spec_review`; Approve → coding runs, commands pass; review writes `review.json`; the job is `awaiting_approval` with a complete evidence summary; Approve → a PR exists, the worktree is gone, the job is `done`, and the issue carries `garagefab:delivered` and a PR link comment. Human actions: create issue, approve spec, approve at the gate.
 
 **Scenario 2 — Clarification.** *Covers SPC-1/2/3, HND-1/4/5.*
-Given an ambiguous issue → the fake agent writes questions; the job is `needs_clarification`; the handoff command is shown; answers are posted with the bearer token; the job returns to `02`/`queued`, the spec agent receives the answers and produces a valid draft; the rest follows Scenario 1.
+Given an ambiguous issue with labels `garagefab` and `type:feature` → the fake agent writes questions; the job is `needs_clarification`; the handoff command is shown; answers are posted with the bearer token; the job returns to `02`/`queued`, the spec agent receives the answers and produces a valid draft; the rest follows Scenario 1.
 
 **Scenario 3 — Repair loop and guardrail.** *Covers COD-4/5/6, GRD-1/4.*
 Coding attempt 1 fails a test → attempt 2 edits a protected file (violation) → attempt 3 succeeds; all commands re-run each time; the job passes with the counter at 2. A variant with failures on all three repairs ends in `04`/`failed` (Manual).
@@ -602,7 +601,7 @@ All items below were reviewed with the developer. IDs are kept stable because re
 
 | ID | Topic | Decision | Status |
 |----|-------|----------|--------|
-| OQ-1 | Source of the work type for GitHub and intent-file entries | A `Type` single-select field in the GitHub Project; `type:` in intent-file front matter. Missing → no job, visible intake error. | Confirmed |
+| OQ-1 | Source of the work type for GitHub and intent-file entries | `type:<work_type>` issue label; `type:` in intent-file front matter. Missing → no job, visible intake error. | Confirmed |
 | OQ-2 | `docs` profile has no approval gate but creates a PR | PR is created right after review; if the review says `request_changes`, the job goes to the approval gate instead. | Confirmed |
 | OQ-3 | Should `request_changes` loop back to coding? | No in Phase 1; it is shown at the gate. | Confirmed |
 | OQ-4 | Test result detail in the evidence | **Pass/fail only.** Per-test counts (test report parsing, e.g., JUnit) are Phase 2. | Confirmed (changed from draft) |
@@ -612,7 +611,7 @@ All items below were reviewed with the developer. IDs are kept stable because re
 | OQ-8 | CLI `run` command from `techstack.md` | Dropped. Commands: `start`, `status`, `open`, `install-skills`, `token rotate`, `version`. | Confirmed |
 | OQ-9 | Risk score scale | Integers 1–5 per dimension. | Confirmed |
 | OQ-10 | Required job spec headings | The v0 set in §6.1, refined after the first real runs (`architecture.md` O5). | Confirmed; refine later |
-| OQ-11 | Projects without `github.repo` or a token | The job runs but fails (Blocked) at delivery with a clear message. | Confirmed |
+| OQ-11 | Projects without `github.repo` or a usable `gh` CLI | The job runs but fails (Blocked) at delivery with a clear message. | Confirmed |
 | OQ-12 | Agent credentials in the environment | Allow-list plus `engine.env_passthrough`. | Confirmed |
 | OQ-13 | Minimum Git version | 2.30. | Confirmed |
 | OQ-14 | Issue keyword in PR bodies | `Closes #<n>` by default; `github.pr_issue_keyword: closes \| refs` per project. | Confirmed (with setting) |

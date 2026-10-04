@@ -33,9 +33,9 @@
 | M2 | Safety and repair | M | M1 | Scenarios 3 (repair, guardrail) and 5 (crash recovery) pass in CI |
 | M3 | Spec flow and evidence | L | M2 | A `feature` job passes clarification, spec review, review report, and approval gate via the API; Scenarios 2 (without GitHub) and 4 pass |
 | M4 | Dashboard and security | L | M3 | The `feature` flow and clarification flow are drivable from the UI with the fake agent |
-| SB | Spike B: GitHub | S | — | `PROJECT_DOCS/spikes/github.md` answers every question in §5; start alongside M3–M4 so the provider is ready for M6 |
+| SB | Spike B: GitHub | S | — | **Cancelled** (superseded by D22/D23, see `PROJECT_DOCS/05_reviewd-change-plan-github-projects.md`) |
 | M5 | Real agents and skill | M | M3, SA | A real `refactor` job completes locally with each of `agy` and `opencode`; the skill reads a job |
-| M6 | GitHub and delivery | L | M4, SB | Scenario 1 passes against a real test repository |
+| M6 | GitHub and delivery | M | M4 | Scenario 1 passes against a real test repository |
 | M7 | Remaining profiles and hardening | M | M5, M6 | Scenario 6 passes; edge-case table and NFR checks pass |
 | M8 | Release | S | M7 | Scenarios 1 and 2 pass with real agents on clean macOS and Linux machines; `v0.1.0` tagged |
 
@@ -51,7 +51,7 @@
 | M2 | Completed |
 | M3 | Completed |
 | M4 | Completed |
-| SB | Draft (docs-only; experiments pending) |
+| SB | Cancelled (superseded by D22/D23) |
 | M5 | Completed |
 | M6–M8 | Not started |
 
@@ -122,8 +122,8 @@ Deliverables:
 
 ### SB — Spike B: GitHub (S)
 
-**Goal:** Verify the GitHub assumptions before building the provider (`architecture.md` §12, `spec.md` OQ-1).
-**Output:** `PROJECT_DOCS/spikes/github.md`. Questions are listed in §5.
+> **Status: Cancelled (superseded by D22/D23)**  
+> GitHub Projects v2 is removed and all GitHub operations are unified under the official `gh` CLI. No spike experiments are needed.
 
 ### M5 — Real agents and skill (M)
 
@@ -133,12 +133,12 @@ Deliverables:
 **Exit criteria:** A real `refactor` job completes locally with each agent; `garagefab install-skills` installs the skill; the skill fetches a job and posts clarification answers. **The dogfooding gate opens.**
 **Risks:** R1, R2, R3.
 
-### M6 — GitHub and delivery (L)
+### M6 — GitHub and delivery (M)
 
-**Goal:** Jobs enter from GitHub and intent files and leave as pull requests.
-**Covers:** `INT-2..7`, `GHB-1..5`, `DLV-1..6`, the poller, Project mirror.
+**Goal:** Jobs enter from GitHub issues and intent files and leave as pull requests.
+**Covers:** `INT-2..7`, `GHB-1..5`, `DLV-1..6`, the poller, issue feedback reconciler.
 
-**Exit criteria:** Scenario 1 passes against a real test repository and Project, with the fake agent in CI and a real agent as a manual check.
+**Exit criteria:** Scenario 1 passes against a real test repository, with the fake agent in CI and a real agent as a manual check.
 **Risks:** R4.
 
 ### M7 — Remaining profiles and hardening (M)
@@ -177,16 +177,9 @@ Answer each question for both agents and record exact commands and outputs.
 
 **Unblocks:** adapter design (M5), prompt templates, skill packaging, `architecture.md` O2, `spec.md` OQ-7.
 
-### Spike B — GitHub
+### Spike B — GitHub (Cancelled)
 
-1. Read Projects v2 items with their `Status` and `Type` single-select fields through GraphQL; measure query cost and pagination.
-2. Update an item's `Status` through GraphQL.
-3. Verify required token permissions for each operation, for classic and fine-grained tokens, on a personal account and on an organization (confirms `architecture.md` §12.3 and exact fine-grained permission names).
-4. Create a pull request via REST; detect an existing PR for a branch.
-5. Rate-limit behavior of a 30-second poll with several projects; whether a longer interval or conditional requests are needed.
-6. Behavior of `Closes #n` with Project built-in workflows.
-
-**Unblocks:** M6, `architecture.md` §12, `spec.md` OQ-1 and OQ-14.
+> **Cancelled.** Replaced by `gh` CLI architecture (D22/D23). Original research questions regarding GraphQL node IDs and Projects v2 permissions are obsolete.
 
 ## 6. Risks
 
@@ -195,7 +188,7 @@ Answer each question for both agents and record exact commands and outputs.
 | R1 | An agent CLI has no dependable headless mode | Spike A first; design the adapter so a PTY-based launcher can be added; decide on scope early | Spike A answers 1, 4, 11 |
 | R2 | Agents produce invalid or missing artifacts | Strict schemas, repair loop, prompt templates tested against recorded fixtures | High repair rate in M5 runs |
 | R3 | Agent CLIs change flags between versions | Record tested versions, detect version at start, contract tests on fixtures | Adapter test failures after upgrade |
-| R4 | GitHub Projects GraphQL or permissions are more limited than assumed | Spike B before M6; Project features are optional by design (D18) | Spike B answers 1–3 |
+| R4 | `gh` CLI output or flags change between versions | Pin a minimum `gh` version; parse only `--json` output; `FakeGHRunner` contract tests | Test failures in `provider/github` |
 | R5 | Process-group and signal behavior differs between macOS and Linux | Fake agent that spawns children; CI on both platforms from M0 | Flaky RCV tests |
 | R6 | SQLite write contention under five concurrent jobs | One write connection, short transactions, no subprocess inside a transaction; load test in M7 | "database is locked" in logs |
 | R7 | Scope creep through dogfooding (every run suggests new ideas) | Parking lot rule (§2); Phase 2 label | Phase 2 items in a milestone |

@@ -1,7 +1,7 @@
 # Spike B: GitHub Research
 
-> Date: 2026-10-03
-> Status: **Draft — documentation-only.** No experiment was run against a real repository or Project. Every finding is tagged `[docs]` (from GitHub documentation or public knowledge) and `[unverified]` until an experiment confirms it. Replace each tag with `[verified: <date>]` plus the recorded request and response.
+> Date: 2026-10-03  
+> Status: **Superseded (historical).** Projects v2 was dropped (D23) and REST/PAT assumptions no longer apply (D22). Garagefab uses the `gh` CLI directly. Kept for historical reference.
 
 ## Summary Table
 
