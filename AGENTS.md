@@ -94,6 +94,7 @@ Every new Go dependency requires an entry in `PROJECT_DOCS/02_architecture.md` �
 - **Milestone branching discipline:** Never write code or execute milestones directly on `main`. Always create or switch to a dedicated milestone branch (`m<N>-<short-description>`) before making code changes. Individual tasks within the milestone are committed to this branch with atomic, requirement-traceable commits. When all milestone exit criteria and acceptance tests pass, the milestone branch is merged to `main`.
 - **Requirement traceability:** Tests and commits reference requirement IDs from `PROJECT_DOCS/03_spec.md` (e.g., `CLI-7`, `RCV-5`).
 - **Commit messages:** Write a concise summary only — **maximum 5 lines** total. Do not add co-author or similar trailer lines.
+- **PR descriptions:** Write a concise summary only — **maximum 5 lines** total. Do not add co-author or similar trailer lines.
 - **Change control:** If implementation reveals that `intent.md`, `architecture.md`, or `spec.md` is wrong or ambiguous, **stop and change the document first** (in its own PR), then continue.
 - **Scope discipline:** Do not fix pre-existing issues or add features outside the current task's scope. Record out-of-scope observations as warnings or separate issues.
 
