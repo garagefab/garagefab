@@ -72,9 +72,6 @@ func TestLoad_NewDataDir_CLI6(t *testing.T) {
 	if cfg.Engine.MaxRepairAttempts != 3 {
 		t.Errorf("expected Engine.MaxRepairAttempts=3, got %d", cfg.Engine.MaxRepairAttempts)
 	}
-	if cfg.GitHub.TokenEnv != "GARAGEFAB_GITHUB_TOKEN" {
-		t.Errorf("expected GitHub.TokenEnv='GARAGEFAB_GITHUB_TOKEN', got %q", cfg.GitHub.TokenEnv)
-	}
 	if cfg.DataDir != dataDir {
 		t.Errorf("expected DataDir %q, got %q", dataDir, cfg.DataDir)
 	}

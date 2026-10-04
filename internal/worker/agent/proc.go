@@ -47,6 +47,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/garagefab/garagefab/internal/worker/command"
 )
 
 // defaultGracePeriod is the maximum time granted to a process group after SIGTERM before SIGKILL (COD-10).
@@ -282,7 +284,7 @@ func runProc(ctx context.Context, p procSpec) (procResult, error) {
 		scanner.Buffer(scannerBuf, 2*1024*1024)
 
 		for scanner.Scan() {
-			text := scanner.Text()
+			text := command.MaskTokens(scanner.Text())
 			nowStr := time.Now().UTC().Format(time.RFC3339Nano)
 			// Format: [<RFC3339Nano>] [stdout|stderr] <text> (LOG-2)
 			logLine := fmt.Sprintf("[%s] [%s] %s\n", nowStr, streamName, text)

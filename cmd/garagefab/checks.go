@@ -196,3 +196,146 @@ func CheckRegisteredProjectAgents(ctx context.Context, db *store.DB, out io.Writ
 	}
 	return results
 }
+
+// ghVersionRegex extracts major and minor version numbers from 'gh version X.Y.Z' output.
+var ghVersionRegex = regexp.MustCompile(`gh (?:version )?(\d+)\.(\d+)(?:\.(\d+))?`)
+
+// GitHubCheckResult captures the evaluation of GitHub CLI availability and auth status (CLI-7, GHB-1).
+type GitHubCheckResult struct {
+	Required      bool
+	Installed     bool
+	Version       string
+	VersionValid  bool
+	Authenticated bool
+	Warning       string
+}
+
+// CheckGitHubCLI validates that GitHub CLI ('gh') is installed (v2.0.0+) and authenticated
+// if any registered project has 'github.repo' configured (CLI-7, GHB-1, Decision P1).
+//
+// In accordance with Decision P1, a missing or unauthenticated gh CLI emits warnings
+// and registers provider intake errors on the overview page, but DOES NOT terminate
+// the factory process fatally.
+func CheckGitHubCLI(
+	ctx context.Context,
+	db *store.DB,
+	out io.Writer,
+	lookPath func(string) (string, error),
+	runVersion func() (string, error),
+	checkAuth func() error,
+) *GitHubCheckResult {
+	res := &GitHubCheckResult{}
+
+	// 1. Determine if any active registered project requires GitHub integration (GHB-3)
+	var ghProjects []*store.Project
+	if db != nil {
+		projects, err := db.Projects().ListProjects(ctx)
+		if err != nil {
+			slog.Warn("preflight: could not list projects for GitHub check", "error", err)
+		} else {
+			for _, p := range projects {
+				if p.IsArchived {
+					continue
+				}
+				cfg, err := config.LoadProjectConfig(p.RepoPath)
+				if err != nil {
+					continue
+				}
+				if cfg.GitHub.Repo != "" {
+					ghProjects = append(ghProjects, p)
+				}
+			}
+		}
+	}
+
+	if len(ghProjects) == 0 {
+		// No projects configure github.repo -> check not required (GHB-3)
+		return res
+	}
+	res.Required = true
+
+	// Inject defaults if test doubles are not provided
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	if runVersion == nil {
+		runVersion = func() (string, error) {
+			outBytes, err := exec.Command("gh", "--version").Output()
+			if err != nil {
+				return "", err
+			}
+			return string(outBytes), nil
+		}
+	}
+	if checkAuth == nil {
+		checkAuth = func() error {
+			return exec.Command("gh", "auth", "status").Run()
+		}
+	}
+
+	recordWarning := func(warning string) {
+		res.Warning = warning
+		if out != nil {
+			fmt.Fprintln(out, warning)
+		}
+		slog.Warn("startup check: " + warning)
+		if db != nil {
+			for _, p := range ghProjects {
+				_ = db.Intake().UpsertIntakeError(ctx, &store.IntakeError{
+					ProjectID: p.ID,
+					Source:    "provider",
+					Ref:       p.Name,
+					Message:   warning,
+				})
+			}
+		}
+	}
+
+	// 2. Check binary installation on system PATH
+	if _, err := lookPath("gh"); err != nil {
+		res.Installed = false
+		recordWarning("warning: GitHub CLI ('gh') is not installed or not in PATH. Required for projects with github.repo.")
+		return res
+	}
+	res.Installed = true
+
+	// 3. Verify minimum version (Git CLI 2.0.0+ required)
+	verOutput, err := runVersion()
+	if err != nil {
+		recordWarning(fmt.Sprintf("warning: failed to inspect GitHub CLI version: %v", err))
+		return res
+	}
+
+	matches := ghVersionRegex.FindStringSubmatch(verOutput)
+	if len(matches) < 3 {
+		recordWarning(fmt.Sprintf("warning: could not parse GitHub CLI version output: %q", strings.TrimSpace(verOutput)))
+		return res
+	}
+
+	major, err := strconv.Atoi(matches[1])
+	if err != nil || major < 2 {
+		foundVer := strings.TrimSpace(matches[0])
+		recordWarning(fmt.Sprintf("warning: GitHub CLI %s is outdated; version 2.0.0+ is required.", foundVer))
+		return res
+	}
+	res.Version = strings.TrimPrefix(matches[0], "gh ")
+	res.VersionValid = true
+
+	// 4. Verify authentication status
+	if err := checkAuth(); err != nil {
+		res.Authenticated = false
+		recordWarning("warning: GitHub CLI ('gh') is not authenticated. Run 'gh auth login' to enable issue intake and PR delivery.")
+		return res
+	}
+	res.Authenticated = true
+
+	// On clean pass, clear any existing provider errors
+	if db != nil {
+		for _, p := range ghProjects {
+			_ = db.Intake().ClearIntakeError(ctx, p.ID, "provider", p.Name)
+		}
+	}
+
+	return res
+}
+

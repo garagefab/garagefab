@@ -142,6 +142,10 @@ var startCmd = &cobra.Command{
 		// are on PATH and match tested version baselines.
 		CheckRegisteredProjectAgents(context.Background(), db, os.Stdout)
 
+		// 4d. Pre-flight GitHub CLI Checks (CLI-7, GHB-1).
+		// Validate that gh is installed (>= 2.0.0) and authenticated if any project uses GitHub.
+		CheckGitHubCLI(context.Background(), db, os.Stdout, nil, nil, nil)
+
 		// 5. Dependency Injection / Wiring (Hexagonal Architecture).
 		// 'factory' defines interfaces (ports) and cannot import 'store' or 'worker' directly.
 		// These adapters bridge the concrete implementations to the factory's interfaces.

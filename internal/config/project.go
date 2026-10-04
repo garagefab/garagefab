@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -37,9 +38,17 @@ type ProjectTimeouts struct {
 	Agent time.Duration `yaml:"agent"` // Maximum runtime for agent steps in this project (COD-10)
 }
 
+// ProjectGitHub defines configuration for GitHub issue intake and delivery PR creation (GHB-1, PRJ-4).
+type ProjectGitHub struct {
+	Repo           string `yaml:"repo"`             // GitHub repository in "owner/repo" format (PRJ-4)
+	IntakeLabel    string `yaml:"intake_label"`     // Label required to trigger intake (default: "garagefab")
+	PRIssueKeyword string `yaml:"pr_issue_keyword"` // Issue closing keyword for PR body ("closes" | "refs", default: "closes")
+}
+
 // ProjectYAML defines the schema for `<repo>/.garagefab/project.yaml`.
 type ProjectYAML struct {
 	BaseRef  string          `yaml:"base_ref"`
+	GitHub   ProjectGitHub   `yaml:"github"`
 	Agents   ProjectAgents   `yaml:"agents"`
 	Timeouts ProjectTimeouts `yaml:"timeouts"`
 	Commands struct {
@@ -60,6 +69,10 @@ type ProjectYAML struct {
 func LoadProjectConfig(repoPath string) (*ProjectYAML, error) {
 	cfg := &ProjectYAML{
 		BaseRef: "origin/main",
+		GitHub: ProjectGitHub{
+			IntakeLabel:    "garagefab",
+			PRIssueKeyword: "closes",
+		},
 	}
 	cfg.Guardrails.ProtectedPaths = []string{"**/*_test.go"}
 
@@ -103,6 +116,23 @@ func LoadProjectConfig(repoPath string) (*ProjectYAML, error) {
 	// Probe defaults to coding agent if omitted (HND-2)
 	if cfg.Agents.Probe == "" {
 		cfg.Agents.Probe = cfg.Agents.Coding
+	}
+
+	// Apply GitHub defaults and validate fields (GHB-1, PRJ-4, Decision P3)
+	if cfg.GitHub.IntakeLabel == "" {
+		cfg.GitHub.IntakeLabel = "garagefab"
+	}
+	if cfg.GitHub.PRIssueKeyword == "" {
+		cfg.GitHub.PRIssueKeyword = "closes"
+	}
+	if cfg.GitHub.Repo != "" {
+		parts := strings.Split(cfg.GitHub.Repo, "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("config: project.yaml: github.repo: invalid repository format %q (want owner/repo)", cfg.GitHub.Repo)
+		}
+	}
+	if cfg.GitHub.PRIssueKeyword != "closes" && cfg.GitHub.PRIssueKeyword != "refs" {
+		return nil, fmt.Errorf("config: project.yaml: github.pr_issue_keyword: invalid keyword %q (want closes|refs)", cfg.GitHub.PRIssueKeyword)
 	}
 
 	return cfg, nil

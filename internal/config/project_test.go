@@ -142,3 +142,85 @@ agents:
 		t.Errorf("expected error %q, got %q", expectedErrMsg, err.Error())
 	}
 }
+
+// TestProjectConfig_GitHub_PRJ4 validates requirement PRJ-4 and GHB-1:
+// Parsing, default population, and semantic validation of project.yaml github settings.
+func TestProjectConfig_GitHub_PRJ4(t *testing.T) {
+	tempDir := t.TempDir()
+	garagefabDir := filepath.Join(tempDir, ".garagefab")
+	if err := os.MkdirAll(garagefabDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	projFile := filepath.Join(garagefabDir, "project.yaml")
+
+	// 1. Defaults when github section omitted
+	cfg, err := config.LoadProjectConfig(tempDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.GitHub.Repo != "" {
+		t.Errorf("expected empty default Repo, got %q", cfg.GitHub.Repo)
+	}
+	if cfg.GitHub.IntakeLabel != "garagefab" {
+		t.Errorf("expected default IntakeLabel 'garagefab', got %q", cfg.GitHub.IntakeLabel)
+	}
+	if cfg.GitHub.PRIssueKeyword != "closes" {
+		t.Errorf("expected default PRIssueKeyword 'closes', got %q", cfg.GitHub.PRIssueKeyword)
+	}
+
+	// 2. Valid custom GitHub configuration
+	validYAML := `
+github:
+  repo: owner/my-repo
+  intake_label: custom-intake
+  pr_issue_keyword: refs
+`
+	if err := os.WriteFile(projFile, []byte(validYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.LoadProjectConfig(tempDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.GitHub.Repo != "owner/my-repo" {
+		t.Errorf("expected Repo 'owner/my-repo', got %q", cfg.GitHub.Repo)
+	}
+	if cfg.GitHub.IntakeLabel != "custom-intake" {
+		t.Errorf("expected IntakeLabel 'custom-intake', got %q", cfg.GitHub.IntakeLabel)
+	}
+	if cfg.GitHub.PRIssueKeyword != "refs" {
+		t.Errorf("expected PRIssueKeyword 'refs', got %q", cfg.GitHub.PRIssueKeyword)
+	}
+
+	// 3. Invalid repo formats
+	invalidRepos := []string{
+		"invalid-repo-no-slash",
+		"/missing-owner",
+		"missing-repo/",
+		"too/many/slashes/here",
+	}
+	for _, inv := range invalidRepos {
+		yaml := "github:\n  repo: " + inv + "\n"
+		if err := os.WriteFile(projFile, []byte(yaml), 0644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := config.LoadProjectConfig(tempDir)
+		if err == nil {
+			t.Errorf("expected error for invalid repo %q, got nil", inv)
+		}
+	}
+
+	// 4. Invalid pr_issue_keyword
+	invalidKeywordYAML := `
+github:
+  repo: owner/repo
+  pr_issue_keyword: invalid
+`
+	if err := os.WriteFile(projFile, []byte(invalidKeywordYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = config.LoadProjectConfig(tempDir)
+	if err == nil {
+		t.Fatal("expected error for invalid pr_issue_keyword, got nil")
+	}
+}
