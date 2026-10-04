@@ -59,12 +59,21 @@ func newProbeTestEngine(t *testing.T, probes []string) (*factory.Engine, *MockSt
 	store := newMockStore()
 	wtMgr := newMockWorktreeManager()
 	agent := &probeScriptRunner{wtMgr: wtMgr, probes: probes}
+	var failThenPassCalls int
 	cmdRunner := &ScriptableCommandRunner{handler: func(opts factory.CommandOptions) (*factory.CommandResult, error) {
 		switch opts.Command {
 		case "pass-cmd":
 			return &factory.CommandResult{ExitCode: 0}, nil
 		case "fail-cmd":
+			// Always fails (used by coding-only tests).
 			return &factory.CommandResult{ExitCode: 1, Stderr: "boom"}, nil
+		case "fail-then-pass-cmd":
+			// Fails while reproducing the bug (stage 03), passes once coding fixes it.
+			failThenPassCalls++
+			if failThenPassCalls == 1 {
+				return &factory.CommandResult{ExitCode: 1, Stderr: "repro"}, nil
+			}
+			return &factory.CommandResult{ExitCode: 0}, nil
 		default:
 			return &factory.CommandResult{ExitCode: 0}, nil
 		}
@@ -91,7 +100,7 @@ func newProbeTestEngine(t *testing.T, probes []string) (*factory.Engine, *MockSt
 // "probe passed; it must fail" and the agent is re-run (PRB-2).
 func TestProbe_PassingProbe_Rejected_PRB2(t *testing.T) {
 	ctx := context.Background()
-	engine, store, wtMgr, agent, _ := newProbeTestEngine(t, []string{probeJSON("pass-cmd"), probeJSON("fail-cmd")})
+	engine, store, wtMgr, agent, _ := newProbeTestEngine(t, []string{probeJSON("pass-cmd"), probeJSON("fail-then-pass-cmd")})
 
 	if err := engine.ExecuteJob(ctx, 1); err != nil {
 		t.Fatalf("ExecuteJob failed: %v", err)
@@ -115,7 +124,7 @@ func TestProbe_InvalidSpec_Flawed_PRB1(t *testing.T) {
 	ctx := context.Background()
 	engine, _, wtMgr, agent, _ := newProbeTestEngine(t, []string{
 		`{"schema_version":1,"command":"","files":[]}`,
-		probeJSON("fail-cmd"),
+		probeJSON("fail-then-pass-cmd"),
 	})
 
 	if err := engine.ExecuteJob(ctx, 1); err != nil {
@@ -162,7 +171,7 @@ func TestProbe_ExhaustedAttempts_Manual_PRB3(t *testing.T) {
 // the job proceeds to 04_Coding (PRB-4).
 func TestProbe_FailingProbe_MovesToCoding_PRB4(t *testing.T) {
 	ctx := context.Background()
-	engine, store, wtMgr, _, _ := newProbeTestEngine(t, []string{probeJSON("fail-cmd")})
+	engine, store, wtMgr, _, _ := newProbeTestEngine(t, []string{probeJSON("fail-then-pass-cmd")})
 
 	if err := engine.ExecuteJob(ctx, 1); err != nil {
 		t.Fatalf("ExecuteJob failed: %v", err)
@@ -223,4 +232,116 @@ func containsString(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// recordingGuardrail records the patterns passed to CheckProtectedPaths (COD-8).
+type recordingGuardrail struct {
+	protectedPatterns   [][]string
+	protectedViolations []factory.GuardrailViolation
+}
+
+func (g *recordingGuardrail) CheckProtectedPaths(_ context.Context, _, _ string, patterns []string) ([]factory.GuardrailViolation, error) {
+	g.protectedPatterns = append(g.protectedPatterns, append([]string{}, patterns...))
+	return g.protectedViolations, nil
+}
+
+func (g *recordingGuardrail) CheckProbeScope(_ context.Context, _, _ string, _ []string, _ string) ([]factory.GuardrailViolation, error) {
+	return nil, nil
+}
+
+// startCodingJob moves the bug_fix test job to 04_Coding and seeds probe.json.
+func startCodingJob(t *testing.T, store *MockStore, wtMgr *MockWorktreeManager, probe string) {
+	t.Helper()
+	store.jobs[1].Stage = factory.StageCoding
+	store.jobs[1].Status = factory.StatusQueued
+	if probe != "" {
+		_ = wtMgr.WriteArtifact(context.Background(), store.jobs[1].WorktreePath, 1, "probe.json", []byte(probe))
+	}
+}
+
+// TestCoding_ProtectsProbeFiles_COD8: the coding step protects the probe files, so editing one
+// is a GRD-1/COD-8 violation (Flawed).
+func TestCoding_ProtectsProbeFiles_COD8(t *testing.T) {
+	ctx := context.Background()
+	engine, store, wtMgr, agent, _ := newProbeTestEngine(t, nil)
+	startCodingJob(t, store, wtMgr, probeJSON("fail-cmd"))
+
+	gr := &recordingGuardrail{protectedViolations: []factory.GuardrailViolation{{Path: "bug_repro_test.go", Status: "M"}}}
+	engine.SetGuardrailRunner(gr)
+
+	if err := engine.ExecuteJob(ctx, 1); err == nil {
+		t.Fatal("expected ExecuteJob to fail on a probe-file guardrail violation")
+	}
+
+	var protected bool
+	for _, pats := range gr.protectedPatterns {
+		if containsString(pats, "bug_repro_test.go") {
+			protected = true
+		}
+	}
+	if !protected {
+		t.Fatalf("expected the probe file to be added to the protected patterns, got %v", gr.protectedPatterns)
+	}
+
+	if p := agent.promptAt(0); !strings.Contains(p, "Probe files (do not modify)") || !strings.Contains(p, "bug_repro_test.go") {
+		t.Fatalf("expected the coding prompt to list probe files, got: %s", p)
+	}
+
+	job, _ := store.GetJob(ctx, 1)
+	if job.Status != factory.StatusFailed {
+		t.Fatalf("expected job failed, got %s/%s", job.Stage, job.Status)
+	}
+}
+
+// TestCoding_ProbeStillFails_COD8: if the probe still fails after coding, the step is Flawed and
+// re-run (COD-8).
+func TestCoding_ProbeStillFails_COD8(t *testing.T) {
+	ctx := context.Background()
+	engine, store, wtMgr, agent, _ := newProbeTestEngine(t, nil)
+	startCodingJob(t, store, wtMgr, probeJSON("fail-cmd"))
+
+	if err := engine.ExecuteJob(ctx, 1); err == nil {
+		t.Fatal("expected ExecuteJob to fail when the probe still fails after coding")
+	}
+	if p := agent.promptAt(1); !strings.Contains(p, "probe still fails after coding") {
+		t.Fatalf("expected 'probe still fails after coding' repair feedback, got: %s", p)
+	}
+}
+
+// TestCoding_ProbePassesAfterCoding_COD8: a probe that passes after coding lets the job proceed
+// to review (COD-8).
+func TestCoding_ProbePassesAfterCoding_COD8(t *testing.T) {
+	ctx := context.Background()
+	engine, store, wtMgr, _, _ := newProbeTestEngine(t, nil)
+	startCodingJob(t, store, wtMgr, probeJSON("pass-cmd"))
+
+	if err := engine.ExecuteJob(ctx, 1); err != nil {
+		t.Fatalf("ExecuteJob failed: %v", err)
+	}
+
+	job, _ := store.GetJob(ctx, 1)
+	if job.Stage != factory.StageHumanApprovalGate {
+		t.Fatalf("expected job to reach the approval gate, got %s/%s", job.Stage, job.Status)
+	}
+}
+
+// TestEvidence_IncludesProbeResult_PRB5: the evidence summary and evidence.md include the probe
+// result next to the review (PRB-5).
+func TestEvidence_IncludesProbeResult_PRB5(t *testing.T) {
+	steps := []*factory.StepRun{
+		{ID: 1, JobID: 1, Stage: factory.StageFailingProbe, Kind: factory.StepKindCommand, Executor: "probe", Status: factory.StepStatusSuccess, LogPath: "/logs/1/step_probe_cmd_1.log"},
+		{ID: 2, JobID: 1, Stage: factory.StageCoding, Kind: factory.StepKindCommand, Executor: "probe", Status: factory.StepStatusSuccess, LogPath: "/logs/1/step_coding_probe_1.log"},
+	}
+	review := &factory.ReviewReport{Decision: "approve", Summary: "ok"}
+
+	summary, md := factory.BuildEvidence(&factory.Job{ID: 1, Title: "t", HeadSHA: "abc"}, steps, review, nil)
+	if summary.Probe.Status != "pass" {
+		t.Fatalf("expected probe status pass, got %q", summary.Probe.Status)
+	}
+	if !strings.Contains(md, "## Failing Probe") {
+		t.Fatalf("expected evidence.md to contain a Failing Probe section, got: %s", md)
+	}
+	if _, ok := summary.DrillDowns["probe"]; !ok {
+		t.Fatalf("expected a probe drill-down link, got %v", summary.DrillDowns)
+	}
 }

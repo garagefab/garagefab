@@ -949,6 +949,39 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 			protectedPaths = projCfg.Guardrails.ProtectedPaths
 		}
 
+		// For bug fixes, load the validated probe: the coding agent must know which files are
+		// protected (COD-8) and what the probe currently outputs (PRB-5).
+		var probeReport *ProbeReport
+		var probeFiles []string
+		var probeResult string
+		if job.WorkType == WorkTypeBugFix {
+			probeBytes, pErr := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "probe.json")
+			var vErr error
+			if pErr != nil {
+				vErr = pErr
+			} else {
+				probeReport, vErr = ValidateProbeJSON(probeBytes)
+			}
+			if vErr != nil {
+				step.Status = StepStatusFail
+				step.FailureCategory = FailureBlocked
+				now := time.Now().UTC()
+				step.EndedAt = &now
+				_ = e.store.UpdateStepRun(ctx, step)
+				errMsg := fmt.Sprintf("probe.json missing or invalid at coding stage: %v", vErr)
+				_ = e.store.InTx(ctx, func(tx StoreTx) error {
+					_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+					_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q,"error":%q}`, StageCoding, StatusFailed, FailureBlocked, errMsg))
+					return nil
+				})
+				return fmt.Errorf("factory: %s", errMsg)
+			}
+			probeFiles = probeReport.Files
+			probeResult = probeReport.Description
+			// Probe files are protected from the coding agent (COD-8).
+			protectedPaths = append(append([]string{}, protectedPaths...), probeReport.Files...)
+		}
+
 		promptData := PromptData{
 			JobID:          job.ID,
 			WorkType:       job.WorkType,
@@ -961,6 +994,8 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 			TestCmds:       testCmds,
 			LintCmds:       lintCmds,
 			ProtectedPaths: protectedPaths,
+			ProbeFiles:     probeFiles,
+			ProbeResult:    probeResult,
 		}
 		prompt, err := RenderPrompt(RoleCoding, promptData)
 		if err != nil {
@@ -1079,10 +1114,10 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 		step.ExitCode = &code
 		_ = e.store.UpdateStepRun(ctx, step)
 
-		// Guardrail check: protected_paths (GRD-1)
+		// Guardrail check: protected_paths plus probe files for bug fixes (GRD-1, COD-8)
 		var guardrailFailed bool
-		if e.guardrailRunner != nil && len(projCfg.Guardrails.ProtectedPaths) > 0 {
-			violations, gErr := e.guardrailRunner.CheckProtectedPaths(ctx, job.WorktreePath, stepStartSHA, projCfg.Guardrails.ProtectedPaths)
+		if e.guardrailRunner != nil && len(protectedPaths) > 0 {
+			violations, gErr := e.guardrailRunner.CheckProtectedPaths(ctx, job.WorktreePath, stepStartSHA, protectedPaths)
 			if gErr == nil && len(violations) > 0 {
 				guardrailFailed = true
 				var paths []string
@@ -1255,6 +1290,59 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 			continue
 		}
 
+		// COD-8: re-run the probe after coding; it must now pass (exit 0).
+		if job.WorkType == WorkTypeBugFix && probeReport != nil {
+			probeLogPath := filepath.Join(e.logBaseDir, fmt.Sprintf("%d", job.ID), fmt.Sprintf("step_coding_probe_%d.log", currentAttempt))
+			probeStep := &StepRun{
+				JobID:     job.ID,
+				Stage:     StageCoding,
+				Kind:      StepKindCommand,
+				Attempt:   currentAttempt,
+				Executor:  "probe",
+				Status:    StepStatusRunning,
+				LogPath:   probeLogPath,
+				StartedAt: time.Now().UTC(),
+			}
+			_ = e.store.CreateStepRun(ctx, probeStep)
+
+			cRes, cErr := e.cmdRunner.Run(ctx, CommandOptions{
+				WorkDir: job.WorktreePath,
+				Command: probeReport.Command,
+				LogPath: probeLogPath,
+				OnProcessStart: func(pid, pgid int, startTime int64) {
+					_ = e.store.CreateProcessRecord(ctx, probeStep.ID, pid, pgid, startTime)
+				},
+			})
+
+			probeNow := time.Now().UTC()
+			probeStep.EndedAt = &probeNow
+			exitCode := 1
+			if cRes != nil {
+				exitCode = cRes.ExitCode
+			}
+			probeStep.ExitCode = &exitCode
+
+			if cErr != nil || exitCode != 0 {
+				probeStep.Status = StepStatusFail
+				probeStep.FailureCategory = FailureFlawed
+				_ = e.store.UpdateStepRun(ctx, probeStep)
+				if currentAttempt < maxAttempts {
+					repairFeedback = "probe still fails after coding"
+					attempt++
+					continue
+				}
+				_ = e.store.InTx(ctx, func(tx StoreTx) error {
+					_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+					_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageCoding, StatusFailed, FailureFlawed))
+					return nil
+				})
+				return fmt.Errorf("factory: probe still fails after coding")
+			}
+
+			probeStep.Status = StepStatusSuccess
+			_ = e.store.UpdateStepRun(ctx, probeStep)
+		}
+
 		// All checks passed!
 		break
 	}
@@ -1323,6 +1411,16 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 		}
 	}
 
+	// For bug fixes, surface the probe result in the review prompt (PRB-5).
+	var probeResult string
+	if job.WorkType == WorkTypeBugFix {
+		if probeBytes, pErr := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "probe.json"); pErr == nil {
+			if rep, vErr := ValidateProbeJSON(probeBytes); vErr == nil {
+				probeResult = rep.Description
+			}
+		}
+	}
+
 	promptDataReview := PromptData{
 		JobID:          job.ID,
 		WorkType:       job.WorkType,
@@ -1331,6 +1429,7 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 		Spec:           specContent,
 		Diff:           diffOutput,
 		CommandSummary: cmdSummary,
+		ProbeResult:    probeResult,
 	}
 	reviewPrompt, err := RenderPrompt(RoleReview, promptDataReview)
 	if err != nil {
