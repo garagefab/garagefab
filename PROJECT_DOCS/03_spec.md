@@ -423,7 +423,7 @@ Rules: `command` and `files` non-empty; `files` are relative paths inside the wo
 | `agents.probe` | string | value of `agents.coding` | |
 | `work_types` | list | all four | |
 | `commands.build`, `.test`, `.lint` | list of strings | empty | Run via `sh -c` in the worktree, in order |
-| `guardrails.protected_paths` | list of globs | empty | GRD-1 |
+| `guardrails.protected_paths` | list of globs | `["**/*_test.go"]` | GRD-1; existing matching files are protected, newly added files are allowed (see below) |
 | `guardrails.test_paths` | list of globs | empty | GRD-5 |
 | `guardrails.commands` | list of strings | empty | GRD-3 |
 | `github.repo` | `owner/name` | none | Needed for GitHub intake, feedback, and delivery |
@@ -433,6 +433,13 @@ Rules: `command` and `files` non-empty; `files` are relative paths inside the wo
 | `limits.max_concurrent_jobs` | int | none | ≤ global limit |
 | `limits.max_repair_attempts` | int | global value | |
 | `timeouts.agent`, `timeouts.command` | duration | global values | |
+
+**Protected paths (`guardrails.protected_paths`, `GRD-1`).** Default `["**/*_test.go"]`. An
+**existing** file matching a pattern (present at the step-start SHA) must not be modified, deleted,
+or renamed by an agent step; **newly added** files matching a pattern are allowed. The effective
+list (default or configured) is passed to both the spec and coding prompts, so a spec must not plan
+edits to a protected file. To permit editing an existing protected file, narrow
+`guardrails.protected_paths` for that project.
 
 **`~/.garagefab/config.yaml`**
 
