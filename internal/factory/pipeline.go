@@ -248,9 +248,11 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	}
 
 	// 4. Stage 04_Coding: AI Agent writes code and undergoes automated repair loop (COD-1..7, GRD-1..4)
+	// The docs profile enters coding directly from 01_Intent (PIP-1: 01 -> 04 -> 05 -> 07).
 	if ((job.WorkType == "" || job.WorkType == WorkTypeRefactor) && (job.Stage == StageIntent || job.Stage == StageCoding)) ||
 		(job.WorkType == WorkTypeFeature && job.Stage == StageCoding) ||
-		(job.WorkType == WorkTypeBugFix && job.Stage == StageCoding) {
+		(job.WorkType == WorkTypeBugFix && job.Stage == StageCoding) ||
+		(job.WorkType == WorkTypeDocs && (job.Stage == StageIntent || job.Stage == StageCoding)) {
 		if err := e.executeCodingStage(jobCtx, job, project, projCfg); err != nil {
 			return err
 		}
@@ -263,8 +265,9 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 		}
 	}
 
-	// 6. Stage 07_Done: Delivery stage (DLV-1..6, WKT-6)
-	if job.Stage == StageDone {
+	// 6. Stage 07_Done: Delivery stage (DLV-1..6, WKT-6). Only queued jobs are delivered;
+	// jobs already marked done (e.g. docs with no PR provider) are not re-delivered.
+	if job.Stage == StageDone && job.Status == StatusQueued {
 		if err := e.executeDeliveryStage(jobCtx, job, project, projCfg); err != nil {
 			return err
 		}
@@ -1185,15 +1188,23 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 			}
 		}
 
-		// Verification Commands: Build -> Test -> Lint (COD-2, COD-3, COD-6)
+		// Verification Commands: Build -> Test -> Lint (COD-2, COD-3, COD-6).
+		// The docs profile runs only guardrails; build/test/lint are intentionally skipped (PIP-1),
+		// so no per-group step rows are recorded for docs.
 		var commandFailed bool
-		commandGroups := []struct {
+		var commandGroups []struct {
 			name string
 			cmds []string
-		}{
-			{"build", projCfg.Commands.Build},
-			{"test", projCfg.Commands.Test},
-			{"lint", projCfg.Commands.Lint},
+		}
+		if job.WorkType != WorkTypeDocs {
+			commandGroups = []struct {
+				name string
+				cmds []string
+			}{
+				{"build", projCfg.Commands.Build},
+				{"test", projCfg.Commands.Test},
+				{"lint", projCfg.Commands.Lint},
+			}
 		}
 
 		for _, grp := range commandGroups {
@@ -1598,11 +1609,20 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 		return fmt.Errorf("factory: write evidence.md: %w", err)
 	}
 
-	headSHAGate, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, "06_Human_Approval_Gate evidence.md")
+	gateMsg := "06_Human_Approval_Gate evidence.md"
+	if job.WorkType == WorkTypeDocs {
+		gateMsg = "07_Done evidence.md"
+	}
+	headSHAGate, err := e.wtMgr.Checkpoint(ctx, job.WorktreePath, job.ID, gateMsg)
 	if err != nil {
 		return fmt.Errorf("factory: evidence checkpoint: %w", err)
 	}
 	job.HeadSHA = headSHAGate
+
+	// OQ-2: an approved docs job skips the human gate and goes straight to delivery.
+	if job.WorkType == WorkTypeDocs && reviewReport.Decision != "request_changes" {
+		return e.transitionDocsToDelivery(ctx, job, project)
+	}
 
 	// Update Job Head and transition to 06_Human_Approval_Gate / awaiting_approval
 	err = e.store.InTx(ctx, func(tx StoreTx) error {
@@ -1623,6 +1643,49 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 
 	job.Stage = StageHumanApprovalGate
 	job.Status = StatusAwaitingApproval
+	e.notifyWake()
+	return nil
+}
+
+// transitionDocsToDelivery advances an approved docs job to 07_Done without a human gate (OQ-2).
+// When no PR provider is configured it completes immediately; otherwise it queues delivery.
+func (e *Engine) transitionDocsToDelivery(ctx context.Context, job *Job, project *Project) error {
+	if e.prProvider == nil {
+		err := e.store.InTx(ctx, func(tx StoreTx) error {
+			if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusDone); err != nil {
+				return err
+			}
+			if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageDone)); err != nil {
+				return err
+			}
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageDone, StatusDone))
+		})
+		if err != nil {
+			return fmt.Errorf("factory: record docs delivery: %w", err)
+		}
+		if job.WorktreePath != "" {
+			_ = e.wtMgr.Remove(ctx, project.RepoPath, job.WorktreePath, job.BranchName, false)
+		}
+		job.Stage = StageDone
+		job.Status = StatusDone
+		e.notifyWake()
+		return nil
+	}
+
+	err := e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusQueued); err != nil {
+			return err
+		}
+		if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageDone)); err != nil {
+			return err
+		}
+		return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageDone, StatusQueued))
+	})
+	if err != nil {
+		return fmt.Errorf("factory: record docs delivery: %w", err)
+	}
+	job.Stage = StageDone
+	job.Status = StatusQueued
 	e.notifyWake()
 	return nil
 }
