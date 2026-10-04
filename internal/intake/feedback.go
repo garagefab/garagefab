@@ -28,12 +28,13 @@
 //     `reconcile()` against a `GitHubClient` driven adapter.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Concurrent Map (`sync.Map`):
-//      Used for lock-free tracking of repositories whose labels have already been bootstrapped
-//      during this daemon session.
-//   2. Atomic Label Updates:
-//      GitHub CLI `issue edit --add-label ... --remove-label ...` executes atomically
-//      in a single command invocation, avoiding race conditions on GitHub's side.
+//  1. Concurrent Map (`sync.Map`):
+//     Used for lock-free tracking of repositories whose labels have already been bootstrapped
+//     during this daemon session.
+//  2. Atomic Label Updates:
+//     GitHub CLI `issue edit --add-label ... --remove-label ...` executes atomically
+//     in a single command invocation, avoiding race conditions on GitHub's side.
+//
 // ==============================================================================
 package intake
 

@@ -12,6 +12,7 @@
 //     the database completely untouched.
 //  3. Error Journal Lifecycle: Upserting, listing, updating, and clearing errors
 //     for files, issues, or providers.
+//
 // ==============================================================================
 package store_test
 

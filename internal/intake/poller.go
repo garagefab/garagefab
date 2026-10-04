@@ -22,12 +22,13 @@
 //     with fixed delay, where the next run starts only after the previous cycle ends.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Atomic Compare-And-Swap (`atomic.Bool`):
-//      `isPolling.CompareAndSwap(false, true)` provides lock-free, race-free single-flight
-//      execution enforcement without lock contention.
-//   2. Ticker Select Loop:
-//      Standard `time.NewTicker` + `select { case <-ticker.C: ... case <-ctx.Done(): ... }`
-//      ensuring graceful cancellation on shutdown.
+//  1. Atomic Compare-And-Swap (`atomic.Bool`):
+//     `isPolling.CompareAndSwap(false, true)` provides lock-free, race-free single-flight
+//     execution enforcement without lock contention.
+//  2. Ticker Select Loop:
+//     Standard `time.NewTicker` + `select { case <-ticker.C: ... case <-ctx.Done(): ... }`
+//     ensuring graceful cancellation on shutdown.
+//
 // ==============================================================================
 package intake
 

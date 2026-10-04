@@ -420,4 +420,3 @@ func (m *Manager) Push(ctx context.Context, worktreePath, remote, branch string)
 	}
 	return nil
 }
-

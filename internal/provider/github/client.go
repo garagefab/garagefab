@@ -20,11 +20,12 @@
 //     text scraping.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. JSON Unmarshaling with Struct Tags:
-//      Standard `encoding/json` maps CLI JSON output into Go structs.
-//   2. Stdin Streaming via `[]byte`:
-//      Large comment and PR descriptions are streamed via stdin (`--body-file -`),
-//      avoiding shell escaping vulnerabilities and argument length limits.
+//  1. JSON Unmarshaling with Struct Tags:
+//     Standard `encoding/json` maps CLI JSON output into Go structs.
+//  2. Stdin Streaming via `[]byte`:
+//     Large comment and PR descriptions are streamed via stdin (`--body-file -`),
+//     avoiding shell escaping vulnerabilities and argument length limits.
+//
 // ==============================================================================
 package github
 

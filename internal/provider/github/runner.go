@@ -23,11 +23,12 @@
 //     environment variables and redirected IO.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Context Cancellation (`context.Context`):
-//      Subprocesses are executed with `exec.CommandContext`, ensuring that if a job
-//      is cancelled or times out, the child `gh` process is terminated immediately.
-//   2. Variadic Arguments (`...string`):
-//      Permits passing variable numbers of CLI flags cleanly without slice allocation.
+//  1. Context Cancellation (`context.Context`):
+//     Subprocesses are executed with `exec.CommandContext`, ensuring that if a job
+//     is cancelled or times out, the child `gh` process is terminated immediately.
+//  2. Variadic Arguments (`...string`):
+//     Permits passing variable numbers of CLI flags cleanly without slice allocation.
+//
 // ==============================================================================
 package github
 

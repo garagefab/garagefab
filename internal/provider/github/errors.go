@@ -20,11 +20,12 @@
 //     (ErrGHNotAuthenticated, ErrGHNotFound) that callers can inspect using errors.Is().
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Sentinel Errors:
-//      Standard library errors.New constants enable explicit, idiomatic error inspection
-//      via errors.Is(err, ErrGHNotAuthenticated).
-//   2. Error Wrapping Context:
-//      Command failures wrap the underlying exit code and masked stderr output.
+//  1. Sentinel Errors:
+//     Standard library errors.New constants enable explicit, idiomatic error inspection
+//     via errors.Is(err, ErrGHNotAuthenticated).
+//  2. Error Wrapping Context:
+//     Command failures wrap the underlying exit code and masked stderr output.
+//
 // ==============================================================================
 package github
 

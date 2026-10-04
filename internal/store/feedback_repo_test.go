@@ -10,6 +10,7 @@
 //  2. Idempotent Upsert: `SetFeedbackState` writes new states and safely overwrites
 //     prior states without duplicate primary key collisions.
 //  3. Foreign Key Cascades: Deleting a parent job cascades to its feedback records.
+//
 // ==============================================================================
 package store_test
 

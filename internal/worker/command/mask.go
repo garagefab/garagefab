@@ -18,11 +18,12 @@
 //     synchronously to each scanned line before writing to log files or memory buffers.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Environment-driven token registry:
-//      Reads `GH_TOKEN` and `GITHUB_TOKEN` from `os.Getenv`. If non-empty, replaces
-//      all occurrences with `***`.
-//   2. In-place string substitution:
-//      Uses `strings.ReplaceAll` for deterministic, fast token redaction.
+//  1. Environment-driven token registry:
+//     Reads `GH_TOKEN` and `GITHUB_TOKEN` from `os.Getenv`. If non-empty, replaces
+//     all occurrences with `***`.
+//  2. In-place string substitution:
+//     Uses `strings.ReplaceAll` for deterministic, fast token redaction.
+//
 // ==============================================================================
 package command
 

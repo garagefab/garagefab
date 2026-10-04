@@ -19,6 +19,7 @@
 //     marker are written within a single database transaction (`db.CreateJobFromIntake`).
 //  5. Error Resilience (INT-5): Provider network or authentication errors record
 //     a provider intake error and continue to the next project without crashing.
+//
 // ==============================================================================
 package intake
 

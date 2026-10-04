@@ -11,6 +11,7 @@
 //  3. Stdin Validation: Verifies body text is streamed via stdin to avoid arg length limits.
 //  4. Static Security Invariant (DLV-5): Verifies that no source code in `internal/`
 //     ever executes a 'merge' command against GitHub CLI.
+//
 // ==============================================================================
 package github_test
 

@@ -21,16 +21,17 @@
 //     either within `db.WithTx(ctx, ...)` or directly via `db.CreateJobFromIntake`.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Unified Executor (`dbtx`):
-//      Methods execute against `dbtx`, allowing queries to run transparently on
-//      either `*sql.DB` or `*sql.Tx`.
-//   2. Native SQLite UPSERT:
-//      Instead of an expensive SELECT-then-INSERT/UPDATE race condition,
-//      `UpsertIntakeError` leverages SQLite 3.24+ `ON CONFLICT (...) DO UPDATE`
-//      for atomic, lock-free error upserts.
-//   3. Constraint Error Translation:
-//      Catches raw SQLite constraint strings and translates them into domain
-//      sentinel errors (`ErrIntakeAlreadySeen`) so callers never parse SQL error strings.
+//  1. Unified Executor (`dbtx`):
+//     Methods execute against `dbtx`, allowing queries to run transparently on
+//     either `*sql.DB` or `*sql.Tx`.
+//  2. Native SQLite UPSERT:
+//     Instead of an expensive SELECT-then-INSERT/UPDATE race condition,
+//     `UpsertIntakeError` leverages SQLite 3.24+ `ON CONFLICT (...) DO UPDATE`
+//     for atomic, lock-free error upserts.
+//  3. Constraint Error Translation:
+//     Catches raw SQLite constraint strings and translates them into domain
+//     sentinel errors (`ErrIntakeAlreadySeen`) so callers never parse SQL error strings.
+//
 // ==============================================================================
 package store
 

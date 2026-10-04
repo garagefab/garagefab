@@ -16,6 +16,7 @@
 //  6. INT-6: Non-overlapping sweep guarantee.
 //  7. INT-7: SchedulerNotifier.Wake() is invoked when new jobs are created.
 //  8. GHB-3: Projects without github.repo are cleanly skipped without issue polling.
+//
 // ==============================================================================
 package intake_test
 

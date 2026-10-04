@@ -15,24 +15,25 @@
 //  4. Cleans up the ephemeral Git worktree while keeping the local branch intact (DLV-4, WKT-6).
 //
 // JAVA / SPRING BOOT COMPARISON:
-// - In a Spring Boot application, this corresponds to an `@Async` delivery service or
-//   Spring Batch `Tasklet` that:
+//   - In a Spring Boot application, this corresponds to an `@Async` delivery service or
+//     Spring Batch `Tasklet` that:
 //   - Injects a `GitClient` and `GitHubFeignClient` (driven outbound ports).
 //   - Operates inside a `@Transactional` boundary for state persistence.
 //   - Invokes resource cleanup (`worktree.delete()`) in a `finally` block or upon
 //     successful delivery.
 //
 // GO IDIOMS & CONCEPTS:
-// 1. Consumer-Driven Ports:
-//    Factory defines `PullRequestProvider` and `WorktreeManager.Push` without importing
-//    external libraries or subprocess runners (Rule 1).
-// 2. Structured Failure Classification:
-//    Any delivery error (missing config, network failure, push rejection) is deterministically
-//    classified as `FailureBlocked` (DLV-3, DLV-6) so that the automated repair loop is not
-//    futilely invoked and the worktree is preserved for human inspection or manual retry.
-// 3. String Assembly for Markdown:
-//    Uses `strings.Builder` for zero-allocation formatting of the delivery PR body
-//    containing intent, evidence summaries, artifact links, and closing keywords.
+//  1. Consumer-Driven Ports:
+//     Factory defines `PullRequestProvider` and `WorktreeManager.Push` without importing
+//     external libraries or subprocess runners (Rule 1).
+//  2. Structured Failure Classification:
+//     Any delivery error (missing config, network failure, push rejection) is deterministically
+//     classified as `FailureBlocked` (DLV-3, DLV-6) so that the automated repair loop is not
+//     futilely invoked and the worktree is preserved for human inspection or manual retry.
+//  3. String Assembly for Markdown:
+//     Uses `strings.Builder` for zero-allocation formatting of the delivery PR body
+//     containing intent, evidence summaries, artifact links, and closing keywords.
+//
 // ==============================================================================
 package factory
 
@@ -53,9 +54,10 @@ import (
 // 3. Remote is determined from base_ref: "origin/<branch>" -> "origin", or local -> "origin" (Decision P2).
 // 4. Git branch is pushed to remote via wtMgr.Push; failures are Blocked (DLV-3).
 // 5. PR search via prProvider.FindPullRequest (DLV-2):
-//    - Open PR is reused.
-//    - Closed or merged PR fails as Blocked (Decision P4, DLV-2).
-//    - Missing PR triggers CreatePullRequest with evidence summary and closing keyword (DLV-1).
+//   - Open PR is reused.
+//   - Closed or merged PR fails as Blocked (Decision P4, DLV-2).
+//   - Missing PR triggers CreatePullRequest with evidence summary and closing keyword (DLV-1).
+//
 // 6. On success: DB records PR URL, status becomes done, worktree is deleted (DLV-4, WKT-6).
 // 7. On failure: status becomes failed (Blocked), worktree is retained for retry (DLV-3, WKT-6).
 func (e *Engine) executeDeliveryStage(ctx context.Context, job *Job, project *Project, projCfg *ProjectConfig) error {
@@ -241,10 +243,10 @@ func (e *Engine) assemblePRBody(ctx context.Context, job *Job, projCfg *ProjectC
 	}
 
 	sb.WriteString("## Artifacts\n\n")
-	sb.WriteString(fmt.Sprintf("- `.garagefab/jobs/%d/evidence.md`\n", job.ID))
-	sb.WriteString(fmt.Sprintf("- `.garagefab/jobs/%d/review.json`\n", job.ID))
+	fmt.Fprintf(&sb, "- `.garagefab/jobs/%d/evidence.md`\n", job.ID)
+	fmt.Fprintf(&sb, "- `.garagefab/jobs/%d/review.json`\n", job.ID)
 	if _, err := e.wtMgr.ReadArtifact(ctx, job.WorktreePath, job.ID, "spec.md"); err == nil {
-		sb.WriteString(fmt.Sprintf("- `.garagefab/jobs/%d/spec.md`\n", job.ID))
+		fmt.Fprintf(&sb, "- `.garagefab/jobs/%d/spec.md`\n", job.ID)
 	}
 	sb.WriteString("\n")
 
@@ -254,7 +256,7 @@ func (e *Engine) assemblePRBody(ctx context.Context, job *Job, projCfg *ProjectC
 		if projCfg != nil && strings.EqualFold(projCfg.GitHub.PRIssueKeyword, "refs") {
 			kw = "Refs"
 		}
-		sb.WriteString(fmt.Sprintf("%s #%s\n", kw, issueNum))
+		fmt.Fprintf(&sb, "%s #%s\n", kw, issueNum)
 	}
 
 	return strings.TrimSpace(sb.String())

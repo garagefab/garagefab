@@ -12,22 +12,23 @@
 //  3. `intakeIssueFeedbackAdapter`: Implements `intake.IssueFeedback` (GHB-2, GHB-5).
 //
 // Dependency Rule Enforcement:
-// - Under Rule 1 (`factory` never imports `provider`) and Rule 6 (`provider` never
-//   imports internal packages), domain and provider packages have zero awareness of each other.
-// - This file in `cmd/garagefab` is the single place where concrete DTOs are mapped across boundaries.
+//   - Under Rule 1 (`factory` never imports `provider`) and Rule 6 (`provider` never
+//     imports internal packages), domain and provider packages have zero awareness of each other.
+//   - This file in `cmd/garagefab` is the single place where concrete DTOs are mapped across boundaries.
 //
 // JAVA / SPRING BOOT COMPARISON:
-// - Corresponds to Spring `@Configuration` adapter beans mapping third-party Feign/REST
-//   DTOs into domain outbound port interfaces, preventing third-party library contamination
-//   of the core business domain.
+//   - Corresponds to Spring `@Configuration` adapter beans mapping third-party Feign/REST
+//     DTOs into domain outbound port interfaces, preventing third-party library contamination
+//     of the core business domain.
 //
 // GO IDIOMS & CONCEPTS:
-// 1. Structural Subtyping:
-//    Adapters implicitly satisfy interfaces declared in `factory` and `intake` without
-//    explicit `implements` keywords.
-// 2. Explicit DTO Mapping:
-//    Uses explicit struct conversion loops rather than reflection or magic mappers,
-//    ensuring compile-time safety and zero hidden allocations.
+//  1. Structural Subtyping:
+//     Adapters implicitly satisfy interfaces declared in `factory` and `intake` without
+//     explicit `implements` keywords.
+//  2. Explicit DTO Mapping:
+//     Uses explicit struct conversion loops rather than reflection or magic mappers,
+//     ensuring compile-time safety and zero hidden allocations.
+//
 // ==============================================================================
 package main
 

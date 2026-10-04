@@ -22,11 +22,12 @@
 //     polling a directory, extracting metadata, and routing messages.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Path Normalization:
-//      Converts OS-specific backslashes to standard forward slashes (`filepath.ToSlash`)
-//      so source references are consistent across macOS, Linux, and Windows.
-//   2. Sha256 Fingerprinting:
-//      Hashes file contents to detect modifications or record provenance in `intake_seen`.
+//  1. Path Normalization:
+//     Converts OS-specific backslashes to standard forward slashes (`filepath.ToSlash`)
+//     so source references are consistent across macOS, Linux, and Windows.
+//  2. Sha256 Fingerprinting:
+//     Hashes file contents to detect modifications or record provenance in `intake_seen`.
+//
 // ==============================================================================
 package intake
 

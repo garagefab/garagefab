@@ -16,6 +16,7 @@
 // GO IDIOMS & CONCEPTS:
 //   - Table-driven tests verifying the full state transition matrix.
 //   - Thread-safe mock implementing `IssueFeedback` with slice recording.
+//
 // ==============================================================================
 package intake_test
 

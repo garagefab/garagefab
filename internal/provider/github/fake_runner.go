@@ -15,10 +15,11 @@
 //   - Thread-Safe In-Memory Recording: Captures all invocations (`Calls`) for assertion.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Mutex Protection (`sync.Mutex`):
-//      Protects recorded calls and response matchers against concurrent test access.
-//   2. Higher-Order Matcher Functions:
-//      Allows callers to match commands by prefix, argument equality, or custom predicates.
+//  1. Mutex Protection (`sync.Mutex`):
+//     Protects recorded calls and response matchers against concurrent test access.
+//  2. Higher-Order Matcher Functions:
+//     Allows callers to match commands by prefix, argument equality, or custom predicates.
+//
 // ==============================================================================
 package github
 

@@ -20,12 +20,13 @@
 //     that queries dirty entities and publishes updates idempotently.
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Unified Executor (`dbtx`):
-//      Methods execute against `dbtx`, allowing queries to run transparently on
-//      either `*sql.DB` or `*sql.Tx`.
-//   2. Native SQLite UPSERT:
-//      `SetFeedbackState` leverages SQLite 3.24+ `ON CONFLICT (job_id) DO UPDATE`
-//      to insert or overwrite the applied state atomically.
+//  1. Unified Executor (`dbtx`):
+//     Methods execute against `dbtx`, allowing queries to run transparently on
+//     either `*sql.DB` or `*sql.Tx`.
+//  2. Native SQLite UPSERT:
+//     `SetFeedbackState` leverages SQLite 3.24+ `ON CONFLICT (job_id) DO UPDATE`
+//     to insert or overwrite the applied state atomically.
+//
 // ==============================================================================
 package store
 

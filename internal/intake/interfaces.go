@@ -18,9 +18,10 @@
 //     clean Go interfaces (`IssueSource`).
 //
 // GO IDIOMS & CONCEPTS:
-//   1. Consumer-Side Interface Segregation:
-//      Interfaces are defined where they are consumed (`internal/intake`), not where
-//      they are implemented (`internal/provider/github`).
+//  1. Consumer-Side Interface Segregation:
+//     Interfaces are defined where they are consumed (`internal/intake`), not where
+//     they are implemented (`internal/provider/github`).
+//
 // ==============================================================================
 package intake
 

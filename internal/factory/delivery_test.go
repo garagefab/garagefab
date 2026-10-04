@@ -21,6 +21,7 @@
 //   - In-memory mock doubles (`MockStore`, `MockWorktreeManager`, `mockPRProvider`).
 //   - Struct embedding and closures for test-specific stubbing.
 //   - Table-driven testing and requirement-traceable test names (DLV-1..6).
+//
 // ==============================================================================
 package factory_test
 

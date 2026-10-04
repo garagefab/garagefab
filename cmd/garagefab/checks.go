@@ -338,4 +338,3 @@ func CheckGitHubCLI(
 
 	return res
 }
-
