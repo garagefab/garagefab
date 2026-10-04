@@ -215,6 +215,11 @@ func (t *factoryStoreTxAdapter) RecordApproval(ctx context.Context, a *factory.A
 	return t.stx.Approvals().CreateApproval(ctx, storeApproval)
 }
 
+// UpdateJobPR updates the pull request URL of a job within an active transaction.
+func (t *factoryStoreTxAdapter) UpdateJobPR(ctx context.Context, jobID int64, prURL string) error {
+	return t.stx.Jobs().UpdateJobPR(ctx, jobID, prURL)
+}
+
 // toFactoryJob maps a persistence model (store.Job) to the domain model (factory.Job).
 func toFactoryJob(j *store.Job) *factory.Job {
 	return &factory.Job{

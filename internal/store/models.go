@@ -47,6 +47,9 @@ var (
 
 	// ErrInvalidState is returned when an action violates state transition rules (PIP-3).
 	ErrInvalidState = errors.New("store: invalid state transition")
+
+	// ErrIntakeAlreadySeen is returned when an intake item (file or issue) has already been processed (INT-4).
+	ErrIntakeAlreadySeen = errors.New("store: intake item already seen")
 )
 
 // Work type constants categorizing development requests.
@@ -227,4 +230,31 @@ type JobStatusItem struct {
 	Stage       string `json:"stage"`
 	Status      string `json:"status"`
 	Title       string `json:"title"`
+}
+
+// IntakeSeen tracks files and GitHub issues that have already produced a job (INT-4).
+type IntakeSeen struct {
+	ID          int64     `json:"id"`
+	ProjectID   int64     `json:"project_id"`
+	Source      string    `json:"source"`
+	Ref         string    `json:"ref"`
+	ContentHash string    `json:"content_hash"`
+	JobID       int64     `json:"job_id"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// IntakeError records errors encountered during intent scanning or issue ingestion (INT-5, GHB-5).
+type IntakeError struct {
+	ProjectID int64     `json:"project_id"`
+	Source    string    `json:"source"`
+	Ref       string    `json:"ref"`
+	Message   string    `json:"message"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// GitHubFeedback tracks the last synchronized state label/comment applied to a GitHub issue (GHB-2).
+type GitHubFeedback struct {
+	JobID        int64     `json:"job_id"`
+	AppliedState string    `json:"applied_state"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }

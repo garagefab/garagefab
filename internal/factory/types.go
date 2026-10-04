@@ -261,6 +261,7 @@ type StoreTx interface {
 	UpdateJobHead(ctx context.Context, jobID int64, headSHA string) error
 	RecordEvent(ctx context.Context, jobID int64, eventType string, payload string) error
 	RecordApproval(ctx context.Context, a *Approval) error
+	UpdateJobPR(ctx context.Context, jobID int64, prURL string) error
 }
 
 // GuardrailViolation represents an existing protected file that was modified or deleted (GRD-1).

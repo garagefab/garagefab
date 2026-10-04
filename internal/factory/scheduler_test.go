@@ -137,6 +137,9 @@ func (t *fakeTxForScheduler) RecordEvent(ctx context.Context, jobID int64, event
 func (t *fakeTxForScheduler) RecordApproval(ctx context.Context, a *Approval) error {
 	return nil
 }
+func (t *fakeTxForScheduler) UpdateJobPR(ctx context.Context, jobID int64, prURL string) error {
+	return nil
+}
 
 type fakeWorktreeManager struct{}
 

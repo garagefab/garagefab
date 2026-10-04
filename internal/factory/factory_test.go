@@ -242,6 +242,15 @@ func (tx *mockTx) RecordApproval(ctx context.Context, a *factory.Approval) error
 	return nil
 }
 
+func (tx *mockTx) UpdateJobPR(ctx context.Context, jobID int64, prURL string) error {
+	j, ok := tx.store.jobs[jobID]
+	if !ok {
+		return fmt.Errorf("job %d not found", jobID)
+	}
+	j.PRURL = prURL
+	return nil
+}
+
 // MockWorktreeManager provides an in-memory double of factory.WorktreeManager.
 type MockWorktreeManager struct {
 	createdWorktrees  map[int64]string

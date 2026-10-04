@@ -156,6 +156,22 @@ func (db *DB) Overview() *OverviewRepo {
 	return &OverviewRepo{q: &dbExecutor{write: db.writeDB, read: db.readDB}}
 }
 
+func (db *DB) Intake() *IntakeRepo {
+	return &IntakeRepo{q: &dbExecutor{write: db.writeDB, read: db.readDB}}
+}
+
+func (db *DB) Feedback() *FeedbackRepo {
+	return &FeedbackRepo{q: &dbExecutor{write: db.writeDB, read: db.readDB}}
+}
+
+// CreateJobFromIntake creates a new job from an intent file or issue, emits the 'job.created' event,
+// and records the item in 'intake_seen' in a single atomic database transaction (INT-4).
+func (db *DB) CreateJobFromIntake(ctx context.Context, j *Job, seen *IntakeSeen) error {
+	return db.WithTx(ctx, func(tx *Tx) error {
+		return tx.Intake().CreateJobFromIntake(ctx, j, seen)
+	})
+}
+
 // ------------------------------------------------------------------------------
 // Repository accessors on Tx (transactional)
 // ------------------------------------------------------------------------------
@@ -190,4 +206,12 @@ func (tx *Tx) ProcessRecords() *ProcessRecordRepo {
 
 func (tx *Tx) Overview() *OverviewRepo {
 	return &OverviewRepo{q: tx.exec}
+}
+
+func (tx *Tx) Intake() *IntakeRepo {
+	return &IntakeRepo{q: tx.exec}
+}
+
+func (tx *Tx) Feedback() *FeedbackRepo {
+	return &FeedbackRepo{q: tx.exec}
 }

@@ -105,6 +105,17 @@ func TestArchitectureImportBoundaries(t *testing.T) {
 					t.Errorf("Architecture Rule 3 violation in %s: worker must not import store", relPath)
 				}
 			}
+
+			// Rule 6: provider/github must not import factory, store, server, worker, or intake
+			if strings.HasPrefix(slashPath, "internal/provider/github") {
+				if strings.Contains(importPath, "/internal/factory") ||
+					strings.Contains(importPath, "/internal/store") ||
+					strings.Contains(importPath, "/internal/server") ||
+					strings.Contains(importPath, "/internal/worker") ||
+					strings.Contains(importPath, "/internal/intake") {
+					t.Errorf("Architecture Rule 6 violation in %s: provider/github must not import internal packages: %s", relPath, importPath)
+				}
+			}
 		}
 
 		return nil

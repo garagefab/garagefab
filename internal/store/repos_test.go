@@ -700,4 +700,82 @@ func TestOverviewRepo_GetOverviewData_UI1(t *testing.T) {
 	if data.RecentActivity[0].JobTitle != "Needs Clarification Job" {
 		t.Errorf("expected recent activity job title %q, got %q", "Needs Clarification Job", data.RecentActivity[0].JobTitle)
 	}
+
+	// 5. Test IntakeErrors population in Overview (INT-5, GHB-5)
+	if err := db.Intake().UpsertIntakeError(ctx, &store.IntakeError{
+		ProjectID: p.ID,
+		Source:    store.SourceGitHubIssue,
+		Ref:       "owner/repo#99",
+		Message:   "Issue missing type label",
+	}); err != nil {
+		t.Fatalf("UpsertIntakeError failed: %v", err)
+	}
+
+	dataWithErr, err := db.Overview().GetOverviewData(ctx)
+	if err != nil {
+		t.Fatalf("GetOverviewData with error failed: %v", err)
+	}
+	if len(dataWithErr.IntakeErrors) != 1 || dataWithErr.IntakeErrors[0] != "Issue missing type label" {
+		t.Fatalf("expected 1 intake error in overview, got %v", dataWithErr.IntakeErrors)
+	}
+}
+
+// TestJobRepo_UpdateJobPR_DLV1 verifies updating pull request URL on delivery (DLV-1).
+func TestJobRepo_UpdateJobPR_DLV1(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+
+	p := &store.Project{
+		Name:     "pr-project",
+		RepoPath: "/tmp/pr-repo",
+	}
+	if err := db.Projects().CreateProject(ctx, p); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	j := &store.Job{
+		ProjectID: p.ID,
+		WorkType:  store.WorkTypeFeature,
+		Title:     "Delivery PR Job",
+		Intent:    "Deliver PR",
+	}
+	if err := db.Jobs().CreateJob(ctx, j); err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	// 1. Update PR URL directly
+	prURL := "https://github.com/test-org/test-repo/pull/123"
+	if err := db.Jobs().UpdateJobPR(ctx, j.ID, prURL); err != nil {
+		t.Fatalf("UpdateJobPR failed: %v", err)
+	}
+
+	updated, err := db.Jobs().GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatalf("GetJob failed: %v", err)
+	}
+	if updated.PRURL != prURL {
+		t.Errorf("expected PR URL %q, got %q", prURL, updated.PRURL)
+	}
+
+	// 2. Update PR URL within transaction
+	newPRURL := "https://github.com/test-org/test-repo/pull/456"
+	err = db.WithTx(ctx, func(tx *store.Tx) error {
+		return tx.Jobs().UpdateJobPR(ctx, j.ID, newPRURL)
+	})
+	if err != nil {
+		t.Fatalf("UpdateJobPR in tx failed: %v", err)
+	}
+
+	updatedTx, err := db.Jobs().GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatalf("GetJob failed: %v", err)
+	}
+	if updatedTx.PRURL != newPRURL {
+		t.Errorf("expected PR URL %q, got %q", newPRURL, updatedTx.PRURL)
+	}
+
+	// 3. Update non-existent job returns ErrNotFound
+	if err := db.Jobs().UpdateJobPR(ctx, 999999, prURL); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for non-existent job, got %v", err)
+	}
 }

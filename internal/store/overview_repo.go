@@ -158,5 +158,28 @@ func (r *OverviewRepo) GetOverviewData(ctx context.Context) (*OverviewData, erro
 		return nil, fmt.Errorf("store: rows overview recent activity: %w", err)
 	}
 
+	// 4. Query active intake and provider errors (INT-5, GHB-5)
+	errQuery := `
+		SELECT message
+		FROM intake_errors
+		ORDER BY updated_at DESC
+	`
+	errRows, err := r.q.QueryContext(ctx, errQuery)
+	if err != nil {
+		return nil, fmt.Errorf("store: query overview intake errors: %w", err)
+	}
+	defer errRows.Close()
+
+	for errRows.Next() {
+		var msg string
+		if err := errRows.Scan(&msg); err != nil {
+			return nil, fmt.Errorf("store: scan overview intake error: %w", err)
+		}
+		data.IntakeErrors = append(data.IntakeErrors, msg)
+	}
+	if err := errRows.Err(); err != nil {
+		return nil, fmt.Errorf("store: rows overview intake errors: %w", err)
+	}
+
 	return data, nil
 }
