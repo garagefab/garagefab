@@ -53,7 +53,8 @@
 | M4 | Completed |
 | SB | Cancelled (superseded by D22/D23) |
 | M5 | Completed |
-| M6–M8 | Not started |
+| M6 | Completed |
+| M7–M8 | Not started |
 
 ## 4. Milestones
 
