@@ -101,6 +101,11 @@ func (a *factoryWorktreeAdapter) HeadSHA(ctx context.Context, worktreePath strin
 	return a.mgr.HeadSHA(ctx, worktreePath)
 }
 
+// Push pushes the worktree branch to the specified remote repository (DLV-1, DLV-3).
+func (a *factoryWorktreeAdapter) Push(ctx context.Context, worktreePath, remote, branch string) error {
+	return a.mgr.Push(ctx, worktreePath, remote, branch)
+}
+
 // WriteArtifact writes an artifact file inside the job's dedicated artifact directory (LOG-3).
 func (a *factoryWorktreeAdapter) WriteArtifact(ctx context.Context, worktreePath string, jobID int64, filename string, content []byte) error {
 	return a.mgr.WriteArtifact(ctx, worktreePath, jobID, filename, content)
@@ -264,7 +269,12 @@ func (a *factoryProjectConfigAdapter) GetProjectConfig(ctx context.Context, repo
 	}
 
 	return &factory.ProjectConfig{
-		BaseRef:      yamlCfg.BaseRef,
+		BaseRef: yamlCfg.BaseRef,
+		GitHub: factory.ProjectGitHub{
+			Repo:           yamlCfg.GitHub.Repo,
+			IntakeLabel:    yamlCfg.GitHub.IntakeLabel,
+			PRIssueKeyword: yamlCfg.GitHub.PRIssueKeyword,
+		},
 		Agents:       agentsMap,
 		AgentTimeout: yamlCfg.Timeouts.Agent,
 		Commands: factory.ProjectCommands{

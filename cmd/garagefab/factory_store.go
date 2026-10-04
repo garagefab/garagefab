@@ -228,6 +228,8 @@ func toFactoryJob(j *store.Job) *factory.Job {
 		WorkType:     j.WorkType,
 		Title:        j.Title,
 		Intent:       j.Intent,
+		Source:       j.Source,
+		SourceRef:    j.SourceRef,
 		Stage:        j.Stage,
 		Status:       j.Status,
 		BranchName:   j.BranchName,

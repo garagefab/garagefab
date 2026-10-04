@@ -598,8 +598,11 @@ func TestE2E_M5_Timeout_COD10(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+cfg.Server.APIToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil || (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated) {
-		t.Fatalf("create job failed: %v, status: %d", err, resp.StatusCode)
+	if err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create job bad status: %d", resp.StatusCode)
 	}
 	var createdJob struct {
 		ID int64 `json:"id"`

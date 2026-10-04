@@ -60,6 +60,7 @@ type Engine struct {
 	cmdRunner           CommandRunner         // Command runner port
 	guardrailRunner     GuardrailRunner       // Guardrail runner port (GRD-1..4)
 	projCfgProvider     ProjectConfigProvider // Project configuration loader (architecture.md §14)
+	prProvider          PullRequestProvider   // Pull request provider port (DLV-1, DLV-2)
 	maxRepairAttempts   int                   // Maximum automated repair loop attempts (default 3, COD-4)
 	defaultAgentTimeout time.Duration         // Default timeout boundary for AI agent steps (COD-10)
 	logBaseDir          string                // Base path on disk for step logs (~/.garagefab/logs)
@@ -97,6 +98,11 @@ func (e *Engine) SetGuardrailRunner(g GuardrailRunner) {
 // SetProjectConfigProvider registers the provider for loading repo project.yaml configs.
 func (e *Engine) SetProjectConfigProvider(p ProjectConfigProvider) {
 	e.projCfgProvider = p
+}
+
+// SetPullRequestProvider registers the pull request provider for stage 07_Done delivery (DLV-1, DLV-2).
+func (e *Engine) SetPullRequestProvider(p PullRequestProvider) {
+	e.prProvider = p
 }
 
 // SetMaxRepairAttempts sets the maximum repair loop iterations (default 3, COD-4).
@@ -245,6 +251,13 @@ func (e *Engine) ExecuteJob(ctx context.Context, jobID int64) error {
 	// 5. Stage 05_Independent_Review: Review agent inspects diff and risk (REV-1..6, APR-1..4)
 	if job.Stage == StageCoding || job.Stage == StageIndependentReview {
 		if err := e.executeReviewStage(jobCtx, job, project, projCfg); err != nil {
+			return err
+		}
+	}
+
+	// 6. Stage 07_Done: Delivery stage (DLV-1..6, WKT-6)
+	if job.Stage == StageDone {
+		if err := e.executeDeliveryStage(jobCtx, job, project, projCfg); err != nil {
 			return err
 		}
 	}
@@ -1266,7 +1279,44 @@ func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error
 			return fmt.Errorf("factory: get project %d: %w", job.ProjectID, err)
 		}
 
-		// Persist approval and transition to StageDone/done (PIP-2)
+		// If PullRequestProvider is nil (e.g. running in milestone 1-5 legacy tests without delivery),
+		// perform immediate terminal transition to 07_Done/done and clean up worktree.
+		if e.prProvider == nil {
+			err = e.store.InTx(ctx, func(tx StoreTx) error {
+				approval := &Approval{
+					JobID:    job.ID,
+					Gate:     ApprovalGateFinal,
+					Decision: ApprovalDecisionApprove,
+					HeadSHA:  job.HeadSHA,
+				}
+				if err := tx.RecordApproval(ctx, approval); err != nil {
+					return err
+				}
+				if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusDone); err != nil {
+					return err
+				}
+				if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageDone)); err != nil {
+					return err
+				}
+				return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageDone, StatusDone))
+			})
+			if err != nil {
+				return fmt.Errorf("factory: record approval: %w", err)
+			}
+
+			// Clean up worktree on delivery completion (DLV-4, WKT-6)
+			if job.WorktreePath != "" {
+				_ = e.wtMgr.Remove(ctx, project.RepoPath, job.WorktreePath, job.BranchName, false)
+			}
+
+			job.Stage = StageDone
+			job.Status = StatusDone
+			e.notifyWake()
+			return nil
+		}
+
+		// Stage 07_Done Delivery: Transition to 07_Done/queued and let scheduler execute delivery (DLV-1, PIP-2).
+		// Worktree is retained for push and PR creation.
 		err = e.store.InTx(ctx, func(tx StoreTx) error {
 			approval := &Approval{
 				JobID:    job.ID,
@@ -1277,25 +1327,20 @@ func (e *Engine) Approve(ctx context.Context, jobID int64, headSHA string) error
 			if err := tx.RecordApproval(ctx, approval); err != nil {
 				return err
 			}
-			if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusDone); err != nil {
+			if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusQueued); err != nil {
 				return err
 			}
 			if err := tx.RecordEvent(ctx, job.ID, "job.stage_changed", fmt.Sprintf(`{"stage":%q}`, StageDone)); err != nil {
 				return err
 			}
-			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageDone, StatusDone))
+			return tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q}`, StageDone, StatusQueued))
 		})
 		if err != nil {
 			return fmt.Errorf("factory: record approval: %w", err)
 		}
 
-		// Clean up worktree on delivery completion (DLV-4, WKT-6)
-		if job.WorktreePath != "" {
-			_ = e.wtMgr.Remove(ctx, project.RepoPath, job.WorktreePath, job.BranchName, false)
-		}
-
 		job.Stage = StageDone
-		job.Status = StatusDone
+		job.Status = StatusQueued
 		e.notifyWake()
 		return nil
 	}
