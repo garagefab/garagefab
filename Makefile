@@ -1,4 +1,4 @@
-.PHONY: all build test lint vet ui ci clean
+.PHONY: all build test lint vet ui ci clean release-snapshot
 
 BIN_DIR := bin
 BINARY := $(BIN_DIR)/garagefab
@@ -39,3 +39,9 @@ ci: build lint vet test
 
 clean:
 	rm -rf $(BIN_DIR) ui/dist
+
+# Build release artifacts for all targets locally without publishing.
+# Requires a local `goreleaser` install (brew install goreleaser); CI uses the
+# GitHub Action instead. Output lands in dist/.
+release-snapshot:
+	goreleaser release --snapshot --clean

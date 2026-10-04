@@ -1,0 +1,58 @@
+# GoReleaser configuration for Garagefab release artifacts.
+#
+# Build-time only: this file is consumed by the `goreleaser` CLI in CI
+# (`.github/workflows/release.yml`). It is NOT a Go package dependency and adds
+# nothing to `go.mod` or the runtime binary.
+#
+# Design notes:
+#   - The UI must be built BEFORE the Go linker runs, because the dashboard is
+#     compiled into the binary via `//go:embed all:ui/dist` (see embed.go). A
+#     release that skipped this would ship a binary with a missing dashboard,
+#     so the UI build is a `before` hook rather than a separate workflow step.
+#   - `CGO_ENABLED=0` keeps the binary static and portable (D1, NFR-2); it is
+#     also what makes cross-compilation to the four targets trivial.
+#   - Version metadata is injected through the existing `internal/version`
+#     variables (Version/Commit/BuildDate) so there is a single source of truth
+#     shared with the Makefile.
+version: 2
+
+project_name: garagefab
+
+before:
+  hooks:
+    - sh -c "cd ui && npm ci --include=dev && npm run build"
+
+builds:
+  - id: garagefab
+    main: ./cmd/garagefab
+    binary: garagefab
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/garagefab/garagefab/internal/version.Version={{.Version}}
+      - -X github.com/garagefab/garagefab/internal/version.Commit={{.Commit}}
+      - -X github.com/garagefab/garagefab/internal/version.BuildDate={{.Date}}
+
+archives:
+  - id: garagefab
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^Merge "
