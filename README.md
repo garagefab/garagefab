@@ -6,12 +6,42 @@ Garagefab orchestrates coding agents through a structured SDLC pipeline. It runs
 
 Website: [https://garagefab.dev](https://garagefab.dev)
 
+## Installation
+
+### Download a release
+
+Download the archive for your OS and architecture from
+[GitHub Releases](https://github.com/garagefab/garagefab/releases), verify it against
+`checksums.txt`, and put the `garagefab` binary on your `PATH`:
+
+```sh
+# macOS / Linux (replace <os> and <arch>: darwin|linux and amd64|arm64)
+curl -LO https://github.com/garagefab/garagefab/releases/download/v0.1.0/garagefab_0.1.0_<os>_<arch>.tar.gz
+curl -LO https://github.com/garagefab/garagefab/releases/download/v0.1.0/checksums.txt
+shasum -a 256 -c checksums.txt        # or: sha256sum -c checksums.txt
+tar -xzf garagefab_0.1.0_<os>_<arch>.tar.gz
+sudo mv garagefab /usr/local/bin/     # or ~/.local/bin/, ensuring it is on PATH
+garagefab version
+```
+
+### Build from source
+
+See [Building](#building) below.
+
 ## Prerequisites
 
-- **Go:** 1.22+
-- **Node.js:** 20+
+**Runtime** — the only things needed to *run* Garagefab:
+
 - **Git:** 2.30+
-- **golangci-lint:** (recommended for linting)
+- The coding agent CLI(s) you configure for your projects ([`agy`](https://github.com/) or
+  `opencode`).
+- **GitHub CLI (`gh`):** 2.x, authenticated — only for projects that set `github.repo`.
+
+**Building from source** additionally needs:
+
+- **Go:** 1.23+ (see [`go.mod`](go.mod))
+- **Node.js:** 20+
+- **golangci-lint:** recommended for linting
 
 ## Building
 
@@ -32,7 +62,7 @@ make lint
 make ci
 ```
 
-## Running Locally
+## Running
 
 ```sh
 # Start with defaults (~/.garagefab, port 7878)
@@ -44,9 +74,56 @@ make ci
 # Check version
 ./bin/garagefab version
 
-# Install garagefab-work skill for agy & opencode
+# Install the garagefab-work skill for agy & opencode
 ./bin/garagefab install-skills
+
+# Print and open a fresh dashboard login URL for a running service
+./bin/garagefab open
 ```
+
+### Keeping it running
+
+Garagefab runs in the **foreground**. Choose one of the following to keep it alive.
+
+**tmux** — simplest, no service manager:
+
+```sh
+tmux new-session -d -s garagefab 'garagefab start --no-open'
+tmux attach -t garagefab          # to view, Ctrl-b d to detach
+```
+
+**launchd (macOS)** — example files in [`examples/launchd/`](examples/launchd/):
+
+```sh
+# User-level agent (starts at login, no root):
+cp examples/launchd/dev.garagefab.garagefab.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/dev.garagefab.garagefab.plist
+
+# System-level daemon (headless; edit <UserName> first, needs admin):
+sudo cp examples/launchd/dev.garagefab.garagefab.daemon.plist /Library/LaunchDaemons/
+sudo launchctl load -w /Library/LaunchDaemons/dev.garagefab.garagefab.daemon.plist
+```
+
+**systemd (Linux)** — example files in [`examples/systemd/`](examples/systemd/):
+
+```sh
+# User-level unit (no root):
+mkdir -p ~/.config/systemd/user
+cp examples/systemd/garagefab.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now garagefab.service
+
+# System-level unit (headless; edit User= first, needs root):
+sudo cp examples/systemd/garagefab.system.service /etc/systemd/system/garagefab.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now garagefab
+```
+
+Adjust the binary paths in the example files if you did not install to the path they assume.
+
+## Browser support
+
+The dashboard supports the latest two versions of Chrome, Firefox, and Safari.
 
 ## Configuration
 
@@ -67,7 +144,10 @@ Full architectural and design specifications are located in [`PROJECT_DOCS/`](PR
 - [`02_architecture.md`](PROJECT_DOCS/02_architecture.md) — Stack, components, boundaries, decisions
 - [`03_spec.md`](PROJECT_DOCS/03_spec.md) — Observable behavior and acceptance criteria
 - [`04_plan.md`](PROJECT_DOCS/04_plan.md) — Milestones and roadmap
+- [`release-checklist.md`](PROJECT_DOCS/release-checklist.md) — Clean-machine release verification
 - [`AGENTS.md`](AGENTS.md) — Instructions for AI coding agents
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 

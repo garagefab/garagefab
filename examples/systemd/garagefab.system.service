@@ -1,0 +1,32 @@
+# Garagefab — system-level systemd unit (Linux).
+#
+# Runs without a login session (headless server). Requires root to install.
+#
+# IMPORTANT: set User= to the account that owns the Git repositories and its
+# ~/.garagefab data directory. Running as root would use /root/.garagefab and
+# lose access to your projects. The user must exist (for example:
+# `sudo useradd --create-home --shell /bin/bash garagefab`).
+#
+# Install:
+#   sudo cp examples/systemd/garagefab.system.service /etc/systemd/system/garagefab.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now garagefab
+#   systemctl status garagefab
+#
+# Logs:
+#   journalctl -u garagefab -f
+
+[Unit]
+Description=Garagefab software factory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=garagefab
+ExecStart=/usr/local/bin/garagefab start --no-open
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

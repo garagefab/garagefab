@@ -1,0 +1,33 @@
+# Garagefab — user-level systemd unit (Linux).
+#
+# Runs under the developer's own account, without root. Use this when the
+# machine has a login session and Garagefab should start with it.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp examples/systemd/garagefab.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now garagefab.service
+#   systemctl --user status garagefab.service
+#
+# Logs:
+#   journalctl --user -u garagefab -f
+#
+# %h expands to the user's home directory, so the default data directory
+# (~/.garagefab) and installed binary under ~/.local/bin are resolved per user.
+# Adjust ExecStart if you installed the binary elsewhere (for example
+# /usr/local/bin/garagefab).
+
+[Unit]
+Description=Garagefab software factory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/garagefab start --no-open
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

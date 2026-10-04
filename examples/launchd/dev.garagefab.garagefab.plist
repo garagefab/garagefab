@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Garagefab — user-level launchd agent (macOS).
+
+  Install (runs at login, restarts on crash, no root required):
+    1. Adjust the binary path below if you did not install to /usr/local/bin.
+    2. cp examples/launchd/dev.garagefab.garagefab.plist ~/Library/LaunchAgents/
+    3. launchctl load -w ~/Library/LaunchAgents/dev.garagefab.garagefab.plist
+
+  Stop / remove:
+    launchctl unload -w ~/Library/LaunchAgents/dev.garagefab.garagefab.plist
+    rm ~/Library/LaunchAgents/dev.garagefab.garagefab.plist
+
+  Why --no-open: a background service has no interactive session to launch a
+  browser into, so it prints the dashboard login URL to the log instead. Use
+  `garagefab open` from a terminal to reach the dashboard.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.garagefab.garagefab</string>
+
+    <!-- ProgramArguments is equivalent to typing this on the command line. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/garagefab</string>
+        <string>start</string>
+        <string>--no-open</string>
+    </array>
+
+    <!-- RunAtLoad starts the service as soon as the agent is loaded (at login). -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- KeepAlive restarts the process if it exits for any reason. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Where launchd captures stdout/stderr; adjust the paths as you prefer. -->
+    <key>StandardOutPath</key>
+    <string>/tmp/garagefab.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/garagefab.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Garagefab — system-level launchd daemon (macOS).
+
+  Use this instead of the LaunchAgent when Garagefab must run without a user
+  session (for example, on a headless machine). It requires admin rights.
+
+  IMPORTANT: set <UserName> to the account that owns the Git repositories and
+  ~/.garagefab data directory; running as root would use /var/root/.garagefab
+  and lose access to your projects.
+
+  Install:
+    sudo cp examples/launchd/dev.garagefab.garagefab.daemon.plist /Library/LaunchDaemons/
+    sudo launchctl load -w /Library/LaunchDaemons/dev.garagefab.garagefab.daemon.plist
+
+  Stop / remove:
+    sudo launchctl unload -w /Library/LaunchDaemons/dev.garagefab.garagefab.daemon.plist
+    sudo rm /Library/LaunchDaemons/dev.garagefab.garagefab.daemon.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.garagefab.garagefab.daemon</string>
+
+    <!-- Replace "YOUR_USERNAME" with the account that should own the process. -->
+    <key>UserName</key>
+    <string>YOUR_USERNAME</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/garagefab</string>
+        <string>start</string>
+        <string>--no-open</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/garagefab.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/garagefab.err.log</string>
+</dict>
+</plist>
