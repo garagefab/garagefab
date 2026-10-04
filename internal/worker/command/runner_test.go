@@ -240,6 +240,23 @@ func TestSecurity_GhTokensNotExposed_GHB4(t *testing.T) {
 	}
 }
 
+// TestCommandRunner_NotFound_ExitCode127 verifies that a missing command yields the shell's
+// 127 exit code, which the failure categorizer classifies as Blocked (spec §8).
+func TestCommandRunner_NotFound_ExitCode127(t *testing.T) {
+	dir := t.TempDir()
+	runner := command.NewRunner()
+	res, err := runner.Run(context.Background(), command.RunOptions{
+		WorkDir: dir,
+		Command: "definitely-not-a-real-command-xyz",
+	})
+	if err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+	if res.ExitCode != 127 {
+		t.Fatalf("expected exit code 127 for a missing command, got %d (stderr=%q)", res.ExitCode, res.Stderr)
+	}
+}
+
 // TestCommandOutput_BoundedMemory_NFR5 verifies that a large command stream keeps the in-memory
 // result bounded to a tail while the full output is still written to the log file (NFR-5).
 func TestCommandOutput_BoundedMemory_NFR5(t *testing.T) {

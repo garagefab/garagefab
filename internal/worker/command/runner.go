@@ -49,6 +49,10 @@ import (
 	"github.com/garagefab/garagefab/internal/worker/logbuf"
 )
 
+// openLogFile opens the streaming log file. It is a package variable so tests can inject a
+// write/open failure (e.g. disk full) at the log-writer boundary (spec §8).
+var openLogFile = os.OpenFile
+
 // ProcessStartFunc is called right after process startup to persist process records (RCV-1).
 type ProcessStartFunc func(pid, pgid int, startTime int64)
 
@@ -213,7 +217,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		if err := os.MkdirAll(filepath.Dir(opts.LogPath), 0700); err != nil {
 			return nil, fmt.Errorf("command: create log dir: %w", err)
 		}
-		f, err := os.OpenFile(opts.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		f, err := openLogFile(opts.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
 			return nil, fmt.Errorf("command: open log file: %w", err)
 		}

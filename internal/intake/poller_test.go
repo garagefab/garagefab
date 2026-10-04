@@ -82,6 +82,36 @@ func setupDB(t *testing.T) *store.DB {
 	return db
 }
 
+// TestIntake_UnavailableProjectSkipped verifies that a moved/deleted project path is skipped by
+// the poller (spec §8).
+func TestIntake_UnavailableProjectSkipped(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t)
+
+	p := &store.Project{
+		Name:     "gone-project",
+		RepoPath: filepath.Join(t.TempDir(), "does-not-exist"),
+	}
+	if err := db.Projects().CreateProject(ctx, p); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	notifier := &fakeNotifier{}
+	poller := intake.NewPoller(db, nil, notifier, time.Second)
+	poller.PollOnce(ctx)
+
+	jobs, err := db.Jobs().ListJobs(ctx, store.JobListFilter{})
+	if err != nil {
+		t.Fatalf("ListJobs failed: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("expected no jobs for an unavailable project, got %d", len(jobs))
+	}
+	if notifier.wakeCount.Load() != 0 {
+		t.Fatalf("expected no scheduler wake for an unavailable project")
+	}
+}
+
 // TestIntake_IntentFile_INT2 tests requirement INT-2, INT-4, INT-7:
 // Scans intent files, validates YAML front matter, creates jobs, and wakes scheduler.
 func TestIntake_IntentFile_INT2(t *testing.T) {

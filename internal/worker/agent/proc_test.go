@@ -142,6 +142,51 @@ func TestRunProc_Timeout_KillsProcessGroup_COD10(t *testing.T) {
 	}
 }
 
+// TestRunProc_IgnoresSIGTERM_SIGKILL verifies that a process group which ignores SIGTERM is
+// escalated to SIGKILL after the grace period (spec §8, COD-10).
+func TestRunProc_IgnoresSIGTERM_SIGKILL(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var capturedPGID int
+	var mu sync.Mutex
+	spec := procSpec{
+		Binary:      "sh",
+		Args:        []string{"-c", "trap '' TERM; while :; do sleep 1; done"},
+		Dir:         tmpDir,
+		LogPath:     filepath.Join(tmpDir, "sigterm.log"),
+		Timeout:     300 * time.Millisecond,
+		GracePeriod: 200 * time.Millisecond,
+		OnStart: func(pid, pgid int, startTime int64) {
+			mu.Lock()
+			capturedPGID = pgid
+			mu.Unlock()
+		},
+	}
+
+	res, err := runProc(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("runProc failed: %v", err)
+	}
+	if !res.TimedOut {
+		t.Fatalf("expected TimedOut=true after SIGKILL escalation")
+	}
+
+	mu.Lock()
+	pgid := capturedPGID
+	mu.Unlock()
+	if pgid <= 0 {
+		t.Fatalf("expected a positive PGID, got %d", pgid)
+	}
+
+	// After escalation the whole process group must be gone.
+	time.Sleep(100 * time.Millisecond)
+	if err := syscall.Kill(-pgid, 0); err == nil {
+		t.Fatalf("process group %d survived SIGKILL", pgid)
+	} else if !errors.Is(err, syscall.ESRCH) {
+		t.Logf("syscall.Kill returned: %v", err)
+	}
+}
+
 // TestRunProc_ParentContextCancel_RCV1 tests that cancelling the parent context
 // prompts immediate process group cancellation with Cancelled=true.
 func TestRunProc_ParentContextCancel_RCV1(t *testing.T) {
