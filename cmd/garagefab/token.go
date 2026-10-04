@@ -64,10 +64,9 @@ func RunTokenRotate(opts RunTokenRotateOptions) error {
 		return err
 	}
 	cfg.Server.APIToken = token
-	if err := config.Save(cfg.DataDir, cfg); err != nil {
-		return err
-	}
 
+	// Invalidate sessions BEFORE persisting the new token. If this fails, the old token stays
+	// in effect and the operator can retry, instead of leaving a half-rotated state.
 	db, err := store.Open(filepath.Join(cfg.DataDir, "garagefab.db"))
 	if err != nil {
 		return fmt.Errorf("token rotate: open store: %w", err)
@@ -75,6 +74,10 @@ func RunTokenRotate(opts RunTokenRotateOptions) error {
 	defer func() { _ = db.Close() }()
 	if err := db.Sessions().DeleteAllSessions(context.Background()); err != nil {
 		return fmt.Errorf("token rotate: invalidate sessions: %w", err)
+	}
+
+	if err := config.Save(cfg.DataDir, cfg); err != nil {
+		return err
 	}
 
 	_, port, err := net.SplitHostPort(cfg.Server.Listen)

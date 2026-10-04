@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -700,16 +701,30 @@ func (e *Engine) executeProbeStage(ctx context.Context, job *Job, project *Proje
 		}
 
 		if err != nil || (res != nil && res.ExitCode != 0) {
-			step.Status = StepStatusFail
-			step.FailureCategory = FailureFlawed
+			code := 1
 			if res != nil {
-				code := res.ExitCode
-				step.ExitCode = &code
+				code = res.ExitCode
 			}
+			step.ExitCode = &code
+			fi := FailureInput{ExitCode: code, Attempt: currentAttempt, MaxAttempts: maxAttempts}
+			if err != nil {
+				fi.Stderr = err.Error()
+			}
+			category := CategorizeFailure(fi)
+			step.Status = StepStatusFail
+			step.FailureCategory = category
 			_ = e.store.UpdateStepRun(ctx, step)
-			repairFeedback = fmt.Sprintf("Agent exited with error: %v", err)
-			attempt++
-			continue
+			if category == FailureFlawed && currentAttempt < maxAttempts {
+				repairFeedback = fmt.Sprintf("Agent exited with error: %v", err)
+				attempt++
+				continue
+			}
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageFailingProbe, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageFailingProbe, StatusFailed, category))
+				return nil
+			})
+			return fmt.Errorf("factory: probe agent failed with category %s", category)
 		}
 
 		// Validate probe.json (PRB-1)
@@ -734,7 +749,20 @@ func (e *Engine) executeProbeStage(ctx context.Context, job *Job, project *Proje
 		if e.guardrailRunner != nil && projCfg != nil && len(projCfg.Guardrails.TestPaths) > 0 {
 			artifactGlob := fmt.Sprintf(".garagefab/jobs/%d/probe.json", job.ID)
 			violations, gErr := e.guardrailRunner.CheckProbeScope(ctx, job.WorktreePath, stepStartSHA, projCfg.Guardrails.TestPaths, artifactGlob)
-			if gErr == nil && len(violations) > 0 {
+			if gErr != nil {
+				// Fail closed (GRD-5): an unrunnable scope check must not pass silently.
+				step.Status = StepStatusFail
+				step.FailureCategory = FailureBlocked
+				_ = e.store.UpdateStepRun(ctx, step)
+				slog.Warn("probe scope check failed", "job_id", job.ID, "step_id", step.ID, "error", gErr)
+				_ = e.store.InTx(ctx, func(tx StoreTx) error {
+					_ = tx.UpdateJobState(ctx, job.ID, StageFailingProbe, StatusFailed)
+					_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageFailingProbe, StatusFailed, FailureBlocked))
+					return nil
+				})
+				return fmt.Errorf("factory: probe scope check failed: %w", gErr)
+			}
+			if len(violations) > 0 {
 				var paths []string
 				for _, v := range violations {
 					paths = append(paths, v.Path)
@@ -800,15 +828,19 @@ func (e *Engine) executeProbeStage(ctx context.Context, job *Job, project *Proje
 		probeStep.ExitCode = &exitCode
 
 		if cErr != nil {
+			// The command could not be run (e.g. log-writer failure): Blocked, not a repair case.
 			probeStep.Status = StepStatusFail
-			probeStep.FailureCategory = FailureFlawed
+			probeStep.FailureCategory = FailureBlocked
 			step.Status = StepStatusFail
-			step.FailureCategory = FailureFlawed
+			step.FailureCategory = FailureBlocked
 			_ = e.store.UpdateStepRun(ctx, probeStep)
 			_ = e.store.UpdateStepRun(ctx, step)
-			repairFeedback = fmt.Sprintf("Failed to run probe command %q: %v", report.Command, cErr)
-			attempt++
-			continue
+			_ = e.store.InTx(ctx, func(tx StoreTx) error {
+				_ = tx.UpdateJobState(ctx, job.ID, StageFailingProbe, StatusFailed)
+				_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageFailingProbe, StatusFailed, FailureBlocked))
+				return nil
+			})
+			return fmt.Errorf("factory: run probe command %q: %w", report.Command, cErr)
 		}
 
 		if exitCode == 0 {
@@ -1121,7 +1153,20 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 		var guardrailFailed bool
 		if e.guardrailRunner != nil && len(protectedPaths) > 0 {
 			violations, gErr := e.guardrailRunner.CheckProtectedPaths(ctx, job.WorktreePath, stepStartSHA, protectedPaths)
-			if gErr == nil && len(violations) > 0 {
+			if gErr != nil {
+				// Fail closed (GRD-1): an unrunnable check must not pass silently.
+				step.Status = StepStatusFail
+				step.FailureCategory = FailureBlocked
+				_ = e.store.UpdateStepRun(ctx, step)
+				slog.Warn("protected-path check failed", "job_id", job.ID, "step_id", step.ID, "error", gErr)
+				_ = e.store.InTx(ctx, func(tx StoreTx) error {
+					_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
+					_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageCoding, StatusFailed, FailureBlocked))
+					return nil
+				})
+				return fmt.Errorf("factory: protected-path check failed: %w", gErr)
+			}
+			if len(violations) > 0 {
 				guardrailFailed = true
 				var paths []string
 				for _, v := range violations {
@@ -1334,17 +1379,22 @@ func (e *Engine) executeCodingStage(ctx context.Context, job *Job, project *Proj
 			probeStep.ExitCode = &exitCode
 
 			if cErr != nil || exitCode != 0 {
+				category := CategorizeFailure(FailureInput{ExitCode: exitCode, Attempt: currentAttempt, MaxAttempts: maxAttempts})
+				if cErr != nil {
+					// The probe could not be run: an environment failure, not a repair case.
+					category = FailureBlocked
+				}
 				probeStep.Status = StepStatusFail
-				probeStep.FailureCategory = FailureFlawed
+				probeStep.FailureCategory = category
 				_ = e.store.UpdateStepRun(ctx, probeStep)
-				if currentAttempt < maxAttempts {
+				if category == FailureFlawed && currentAttempt < maxAttempts {
 					repairFeedback = "probe still fails after coding"
 					attempt++
 					continue
 				}
 				_ = e.store.InTx(ctx, func(tx StoreTx) error {
 					_ = tx.UpdateJobState(ctx, job.ID, StageCoding, StatusFailed)
-					_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageCoding, StatusFailed, FailureFlawed))
+					_ = tx.RecordEvent(ctx, job.ID, "job.status_changed", fmt.Sprintf(`{"stage":%q,"status":%q,"category":%q}`, StageCoding, StatusFailed, category))
 					return nil
 				})
 				return fmt.Errorf("factory: probe still fails after coding")
@@ -1652,6 +1702,9 @@ func (e *Engine) executeReviewStage(ctx context.Context, job *Job, project *Proj
 func (e *Engine) transitionDocsToDelivery(ctx context.Context, job *Job, project *Project) error {
 	if e.prProvider == nil {
 		err := e.store.InTx(ctx, func(tx StoreTx) error {
+			if err := tx.UpdateJobHead(ctx, job.ID, job.HeadSHA); err != nil {
+				return err
+			}
 			if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusDone); err != nil {
 				return err
 			}
@@ -1673,6 +1726,9 @@ func (e *Engine) transitionDocsToDelivery(ctx context.Context, job *Job, project
 	}
 
 	err := e.store.InTx(ctx, func(tx StoreTx) error {
+		if err := tx.UpdateJobHead(ctx, job.ID, job.HeadSHA); err != nil {
+			return err
+		}
 		if err := tx.UpdateJobState(ctx, job.ID, StageDone, StatusQueued); err != nil {
 			return err
 		}

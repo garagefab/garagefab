@@ -72,23 +72,26 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	jobs, err := s.DB.Jobs().ListJobs(r.Context(), filter)
-	if err != nil {
-		http.Error(w, "Failed to list jobs", http.StatusInternalServerError)
-		return
-	}
-	if jobs == nil {
-		jobs = []*store.Job{}
-	}
-
-	// Expose the next page cursor via a response header so the existing array body stays
+	// Fetch one extra row to detect whether a further page exists, then trim it off. This
+	// gives an exact X-Next-Cursor (omitted on the final page) while keeping the array body
 	// backward-compatible with the dashboard (NFR-4).
 	effectiveLimit := filter.Limit
 	if effectiveLimit <= 0 {
 		effectiveLimit = 50
 	}
-	if len(jobs) == effectiveLimit {
+	filter.Limit = effectiveLimit + 1
+
+	jobs, err := s.DB.Jobs().ListJobs(r.Context(), filter)
+	if err != nil {
+		http.Error(w, "Failed to list jobs", http.StatusInternalServerError)
+		return
+	}
+	if len(jobs) > effectiveLimit {
+		jobs = jobs[:effectiveLimit]
 		w.Header().Set("X-Next-Cursor", strconv.FormatInt(jobs[len(jobs)-1].ID, 10))
+	}
+	if jobs == nil {
+		jobs = []*store.Job{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

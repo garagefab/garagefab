@@ -60,11 +60,20 @@ func TestListEndpoints_Cursor_NFR4(t *testing.T) {
 		t.Fatal("expected an X-Next-Cursor header on a full page")
 	}
 
-	page2, _ := list("?limit=2&cursor=" + next)
+	page2, next2 := list("?limit=2&cursor=" + next)
 	if len(page2) != 2 {
 		t.Fatalf("expected 2 jobs on page 2, got %d", len(page2))
 	}
 	if page2[0].ID >= page1[len(page1)-1].ID {
 		t.Fatalf("cursor did not advance: page1 last=%d page2 first=%d", page1[len(page1)-1].ID, page2[0].ID)
+	}
+
+	// Final page: exactly one job remains, so no further cursor is advertised.
+	page3, next3 := list("?limit=2&cursor=" + next2)
+	if len(page3) != 1 {
+		t.Fatalf("expected 1 job on the final page, got %d", len(page3))
+	}
+	if next3 != "" {
+		t.Fatalf("expected no X-Next-Cursor on the final page, got %q", next3)
 	}
 }

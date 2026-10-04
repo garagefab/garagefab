@@ -88,19 +88,15 @@ func TestConcurrentJobs_ParallelReader_NFR7(t *testing.T) {
 	const writers = 5
 	const iterations = 20
 	errCh := make(chan error, writers+1)
-	var wg sync.WaitGroup
-	stop := make(chan struct{})
+	readerReady := make(chan struct{})
+	writersDone := make(chan struct{})
+	readerDone := make(chan struct{})
 
-	// Parallel reader.
-	wg.Add(1)
+	// Parallel reader: runs until the writers finish (no sleep-based synchronization, R11).
 	go func() {
-		defer wg.Done()
+		defer close(readerDone)
+		first := true
 		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
 			if _, err := db.Jobs().ListJobs(ctx, store.JobListFilter{Limit: 10}); err != nil {
 				errCh <- err
 				return
@@ -109,14 +105,25 @@ func TestConcurrentJobs_ParallelReader_NFR7(t *testing.T) {
 				errCh <- err
 				return
 			}
+			if first {
+				close(readerReady)
+				first = false
+			}
+			select {
+			case <-writersDone:
+				return
+			default:
+			}
 		}
 	}()
 
-	// Concurrent job writers.
+	// Concurrent job writers; each starts only after the reader has begun polling.
+	var wg sync.WaitGroup
 	for w := 0; w < writers; w++ {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
+			<-readerReady
 			for i := 0; i < iterations; i++ {
 				j := &store.Job{
 					ProjectID: proj.ID,
@@ -138,16 +145,9 @@ func TestConcurrentJobs_ParallelReader_NFR7(t *testing.T) {
 		}(w)
 	}
 
-	// Wait for writers to finish, then stop the reader.
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	// Give writers time; the reader runs until stop is closed.
-	time.Sleep(200 * time.Millisecond)
-	close(stop)
-	<-done
+	wg.Wait()
+	close(writersDone)
+	<-readerDone
 
 	close(errCh)
 	for err := range errCh {
