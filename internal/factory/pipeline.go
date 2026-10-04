@@ -330,9 +330,10 @@ func (e *Engine) executeSpecStage(ctx context.Context, job *Job, project *Projec
 	attempt := 0
 
 	// Resolve the project's protected-path globs once, before the retry loop: the list is stable
-	// for the whole stage, and resolving it here makes the spec prompt honest about GRD-1
-	// constraints so the spec agent never plans an edit to a protected file. nil-safe because a
-	// job may run without a resolvable project config (projCfg == nil).
+	// for the whole stage, and resolving it here lets the spec prompt carry the GRD-1 obligation so
+	// the spec agent is instructed not to plan an edit to a protected file. The nil check mirrors
+	// the coding stage's guard; ExecuteJob substitutes a default config when none is resolvable, so
+	// projCfg is non-nil at this call site today, but the guard keeps the helper safe either way.
 	var protectedPaths []string
 	if projCfg != nil {
 		protectedPaths = projCfg.Guardrails.ProtectedPaths

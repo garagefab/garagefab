@@ -55,8 +55,9 @@ Per-project behavior is configured in `<repo>/.garagefab/project.yaml` (full ref
 existing files from agent edits: `guardrails.protected_paths` (default `["**/*_test.go"]`) prevents
 an agent step from modifying, deleting, or renaming an **existing** file matching a pattern;
 **newly added** files are allowed. The effective list (default or configured) is passed to both the
-spec and coding prompts, so a spec will not plan edits to a protected file. To permit editing an
-existing protected file, narrow `guardrails.protected_paths` for that project.
+spec and coding prompts, so the spec prompt instructs the agent not to plan edits to a protected
+file. To permit editing an existing protected file, narrow `guardrails.protected_paths` for that
+project.
 
 ## Documentation
 

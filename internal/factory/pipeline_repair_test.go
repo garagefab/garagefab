@@ -408,8 +408,12 @@ func TestEngine_GuardrailViolation_Terminal_RecordsFail_GRD4(t *testing.T) {
 	cmdRunner := &ScriptableCommandRunner{}
 
 	// Always violates: no attempt can satisfy the guardrail, so it terminates after one try.
+	// Count consultations so the test proves the guardrail runner (not some other signal) is
+	// what failed the attempt.
+	var guardrailCalls int
 	guardrails := &dynamicGuardrailRunner{
 		checkFn: func() []factory.GuardrailViolation {
+			guardrailCalls++
 			return []factory.GuardrailViolation{{Path: "auth_test.go", Status: "M"}}
 		},
 	}
@@ -427,6 +431,12 @@ func TestEngine_GuardrailViolation_Terminal_RecordsFail_GRD4(t *testing.T) {
 
 	if err := engine.ExecuteJob(ctx, 1); err == nil {
 		t.Fatal("expected ExecuteJob to fail on terminal guardrail violation, got nil")
+	}
+
+	// The failure must come from the guardrail runner actually being consulted, not from an
+	// unrelated signal (e.g. a non-empty diff).
+	if guardrailCalls == 0 {
+		t.Error("expected the guardrail runner to be consulted at least once")
 	}
 
 	stepRuns, _ := store.ListStepRunsByJob(ctx, 1)
@@ -468,6 +478,163 @@ func (d *dynamicGuardrailRunner) CheckProbeScope(ctx context.Context, workDir, s
 		return d.checkFn(), nil
 	}
 	return nil, nil
+}
+
+// TestEngine_CustomGuardrailCommand_RecordsFail_GRD3 verifies that a failing project-configured
+// guardrail command (guardrails.commands, GRD-3) is recorded on the coding agent step run as a
+// failure with a category — never left as success — and that the repair loop categorizes it
+// Flawed while budget remains and Manual once the budget is exhausted (GRD-4).
+//
+// Why this matters: in this scenario the agent process itself exits 0; it is the separate
+// guardrail command that fails. Without explicitly overwriting the success status recorded when
+// the agent passed, step_runs would show a passing coding attempt next to a failed job, hiding
+// the very cause the repair loop is reacting to.
+//
+// Sub-case structure mirrors the guardrail tests above: a repairable violation (command fails
+// once, then passes) must advance the job, while a terminal violation (command always fails and
+// no repair budget remains) must fail the job with category Manual.
+func TestEngine_CustomGuardrailCommand_RecordsFail_GRD3(t *testing.T) {
+	const guardrailCmd = "bash scripts/check-guardrail.sh"
+
+	tests := []struct {
+		name           string
+		maxAttempts    int
+		alwaysFail     bool
+		wantJobFailed  bool
+		wantAttempts   int
+		wantFirstCat   string
+		wantLastStatus string
+		wantRepairMsg  string
+	}{
+		{
+			name:           "repairable command failure records Flawed",
+			maxAttempts:    3,
+			wantAttempts:   2,
+			wantFirstCat:   factory.FailureFlawed,
+			wantLastStatus: factory.StepStatusSuccess,
+			wantRepairMsg:  "Custom guardrail command failed",
+		},
+		{
+			name:           "exhausted attempts records Manual",
+			maxAttempts:    1,
+			alwaysFail:     true,
+			wantJobFailed:  true,
+			wantAttempts:   1,
+			wantFirstCat:   factory.FailureManual,
+			wantLastStatus: factory.StepStatusFail,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newMockStore()
+			store.projects[1] = &factory.Project{ID: 1, Name: "test-proj", RepoPath: "/repo", BaseRef: "main"}
+			store.jobs[1] = &factory.Job{
+				ID:        1,
+				ProjectID: 1,
+				WorkType:  factory.WorkTypeRefactor,
+				Stage:     factory.StageIntent,
+				Status:    factory.StatusQueued,
+				Intent:    "refactor code",
+			}
+
+			wtMgr := newMockWorktreeManager()
+			agent := &ScriptableAgentRunner{}
+
+			// The scripted guardrail-command failure drives the GRD-3 path, so counting
+			// invocations also proves the command really ran rather than failing elsewhere.
+			var guardrailRuns int
+			cmdRunner := &ScriptableCommandRunner{}
+			cmdRunner.handler = func(opts factory.CommandOptions) (*factory.CommandResult, error) {
+				if opts.Command != guardrailCmd {
+					return &factory.CommandResult{ExitCode: 0}, nil
+				}
+				guardrailRuns++
+				if tc.alwaysFail || guardrailRuns == 1 {
+					return &factory.CommandResult{
+						ExitCode: 1,
+						Stdout:   "checking imports",
+						Stderr:   "guardrail: disallowed import",
+					}, nil
+				}
+				return &factory.CommandResult{ExitCode: 0}, nil
+			}
+
+			projCfg := &factory.ProjectConfig{
+				Guardrails: factory.ProjectGuardrails{
+					Commands: []string{guardrailCmd},
+				},
+			}
+
+			engine := factory.NewEngine(store, wtMgr, agent, cmdRunner, t.TempDir())
+			engine.SetProjectConfigProvider(&MockProjectConfigProvider{cfg: projCfg})
+			engine.SetMaxRepairAttempts(tc.maxAttempts)
+
+			err := engine.ExecuteJob(ctx, 1)
+			if tc.wantJobFailed && err == nil {
+				t.Fatal("expected ExecuteJob to fail on terminal guardrail-command violation, got nil")
+			}
+			if !tc.wantJobFailed && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if guardrailRuns == 0 {
+				t.Fatal("expected the custom guardrail command to be executed at least once")
+			}
+
+			stepRuns, _ := store.ListStepRunsByJob(ctx, 1)
+			var codingAgentSteps []*factory.StepRun
+			for _, s := range stepRuns {
+				if s.Stage == factory.StageCoding && s.Kind == factory.StepKindAgent {
+					codingAgentSteps = append(codingAgentSteps, s)
+				}
+			}
+			if len(codingAgentSteps) != tc.wantAttempts {
+				t.Fatalf("expected %d coding agent step runs, got %d", tc.wantAttempts, len(codingAgentSteps))
+			}
+
+			// The command-failed attempt must be persisted as fail with a category: the agent
+			// exited 0, but the guardrail command did not pass, so recording success would be a lie.
+			first := codingAgentSteps[0]
+			if first.Status != factory.StepStatusFail {
+				t.Errorf("guardrail-command failure must record step status fail, got %s", first.Status)
+			}
+			if first.FailureCategory != tc.wantFirstCat {
+				t.Errorf("expected attempt 1 failure category %s, got %s", tc.wantFirstCat, first.FailureCategory)
+			}
+
+			last := codingAgentSteps[len(codingAgentSteps)-1]
+			if last.Status != tc.wantLastStatus {
+				t.Errorf("expected final coding agent status %s, got %s", tc.wantLastStatus, last.Status)
+			}
+
+			if tc.wantRepairMsg != "" {
+				var repairPrompt string
+				agent.mu.Lock()
+				for _, inv := range agent.invocations {
+					if inv.Stage == factory.StageCoding && strings.Contains(inv.Prompt, tc.wantRepairMsg) {
+						repairPrompt = inv.Prompt
+					}
+				}
+				agent.mu.Unlock()
+				if repairPrompt == "" {
+					t.Errorf("expected the repair prompt to contain %q", tc.wantRepairMsg)
+				}
+			}
+
+			job, _ := store.GetJob(ctx, 1)
+			if tc.wantJobFailed {
+				if job.Status != factory.StatusFailed {
+					t.Errorf("expected job status failed, got %s", job.Status)
+				}
+				return
+			}
+			if job.Stage != factory.StageHumanApprovalGate || job.Status != factory.StatusAwaitingApproval {
+				t.Errorf("expected job at %s/%s after successful repair, got %s/%s",
+					factory.StageHumanApprovalGate, factory.StatusAwaitingApproval, job.Stage, job.Status)
+			}
+		})
+	}
 }
 
 // TestEngine_Cancel_TerminatesJob_PIP6 verifies that cancelling an active or queued job
@@ -687,13 +854,13 @@ func TestSpecPrompt_IncludesProtectedPaths_GRD1(t *testing.T) {
 	tests := []struct {
 		name           string
 		protectedPaths []string
-		wantContains   string
+		wantContains   []string
 		wantAbsent     string
 	}{
 		{
 			name:           "configured patterns are rendered",
 			protectedPaths: []string{"**/*_test.go"},
-			wantContains:   "**/*_test.go",
+			wantContains:   []string{"### Protected Paths", "**/*_test.go"},
 		},
 		{
 			name:           "no patterns means no section",
@@ -752,8 +919,10 @@ func TestSpecPrompt_IncludesProtectedPaths_GRD1(t *testing.T) {
 				t.Fatalf("expected first agent invocation role %q, got %q", factory.RoleSpec, first.Role)
 			}
 
-			if tc.wantContains != "" && !strings.Contains(first.Prompt, tc.wantContains) {
-				t.Errorf("expected spec prompt to contain %q, got:\n%s", tc.wantContains, first.Prompt)
+			for _, want := range tc.wantContains {
+				if !strings.Contains(first.Prompt, want) {
+					t.Errorf("expected spec prompt to contain %q, got:\n%s", want, first.Prompt)
+				}
 			}
 			if tc.wantAbsent != "" && strings.Contains(first.Prompt, tc.wantAbsent) {
 				t.Errorf("expected spec prompt NOT to contain %q, got:\n%s", tc.wantAbsent, first.Prompt)
